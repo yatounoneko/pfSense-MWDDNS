@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+    mwddns.xml  –  pfSense package definition for Multi-WAN DDNS
+    Placed at: /usr/local/pkg/mwddns.xml
+-->
+<packagegui>
+    <!-- ── Identity ─────────────────────────────────────── -->
+    <name>mwddns</name>
+    <title>Services: Multi-WAN DDNS</title>
+    <version>1.0.0</version>
+    <description>Multi-WAN Dynamic DNS for multiple providers (Cloudflare, Alibaba Cloud DNS/ESA, PowerDNS) – monitor multiple WAN interfaces and keep A/AAAA records in sync automatically.</description>
+
+    <!-- ── Core include ──────────────────────────────────── -->
+    <include_file>/usr/local/pkg/mwddns.inc</include_file>
+
+    <!-- ── Navigation ────────────────────────────────────── -->
+    <menu>
+        <name>Multi-WAN DDNS</name>
+        <tooltiptext>Multi-WAN Dynamic DNS (Cloudflare / Alibaba Cloud DNS / Alibaba Cloud ESA / PowerDNS)</tooltiptext>
+        <section>Services</section>
+        <configfile>mwddns.xml</configfile>
+        <url>/mwddns.php</url>
+    </menu>
+
+    <!-- ── Page tabs ─────────────────────────────────────── -->
+    <tabs>
+        <tab>
+            <text>Rules</text>
+            <url>/mwddns.php</url>
+            <active/>
+        </tab>
+    </tabs>
+
+    <!--
+        Additional files that the package manager copies to the
+        correct locations on the firewall.
+    -->
+    <additional_files_needed>
+        <item>
+            <name>/usr/local/pkg/mwddns/cloudflare.php</name>
+            <url>%%PKGPATH%%mwddns/cloudflare.php</url>
+        </item>
+        <item>
+            <name>/usr/local/pkg/mwddns/alidns.php</name>
+            <url>%%PKGPATH%%mwddns/alidns.php</url>
+        </item>
+        <item>
+            <name>/usr/local/pkg/mwddns/aliesa.php</name>
+            <url>%%PKGPATH%%mwddns/aliesa.php</url>
+        </item>
+        <item>
+            <name>/usr/local/pkg/mwddns/powerdns.php</name>
+            <url>%%PKGPATH%%mwddns/powerdns.php</url>
+        </item>
+        <item>
+            <name>/usr/local/pkg/mwddns/locale/zh_CN.php</name>
+            <url>%%PKGPATH%%mwddns/locale/zh_CN.php</url>
+        </item>
+        <item>
+            <name>/usr/local/pkg/mwddns/locale/zh_HK.php</name>
+            <url>%%PKGPATH%%mwddns/locale/zh_HK.php</url>
+        </item>
+        <item>
+            <name>/usr/local/www/mwddns.php</name>
+            <url>%%PKGPATH%%mwddns.php</url>
+        </item>
+        <item>
+            <name>/usr/local/www/mwddns_edit.php</name>
+            <url>%%PKGPATH%%mwddns_edit.php</url>
+        </item>
+        <item>
+            <name>/usr/local/www/widgets/widgets/mwddns.widget.php</name>
+            <url>%%PKGPATH%%mwddns.widget.php</url>
+        </item>
+        <item>
+            <name>/usr/local/bin/mwddns_cron.php</name>
+            <url>%%PKGPATH%%mwddns_cron.php</url>
+        </item>
+    </additional_files_needed>
+
+    <!-- ── Lifecycle hooks ───────────────────────────────── -->
+    <custom_php_install_command>mwddns_install();</custom_php_install_command>
+    <custom_php_deinstall_command>mwddns_deinstall();</custom_php_deinstall_command>
+</packagegui>
