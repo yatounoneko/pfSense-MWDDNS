@@ -268,6 +268,28 @@ function mwddns_get_interface_desc(string $ifname): string
 }
 
 /**
+ * Normalize an interface identifier to the friendly pfSense key (wan/opt1/...).
+ * Falls back to the original string when no mapping exists.
+ */
+function mwddns_normalize_ifname(?string $ifname): ?string
+{
+    if ($ifname === null) {
+        return null;
+    }
+    $trimmed = trim($ifname);
+    if ($trimmed === '') {
+        return null;
+    }
+    if (function_exists('convert_real_interface_to_friendly_interface_name')) {
+        $friendly = convert_real_interface_to_friendly_interface_name($trimmed);
+        if (!empty($friendly)) {
+            return $friendly;
+        }
+    }
+    return $trimmed;
+}
+
+/**
  * Return the space-separated interface list stored in a rule as a
  * clean PHP array, discarding empty entries.
  */
@@ -469,6 +491,19 @@ function mwddns_dns_lookup_uncached(string $hostname, string $type, int $ipFilte
  * ========================================================= */
 
 /**
+ * Persist last-run metadata into a rules array in-place.
+ */
+function mwddns_set_rule_metadata(array &$rules, int $id, array $result, ?int $timestamp = null): void
+{
+    if (!isset($rules[$id])) {
+        return;
+    }
+    $ts = $timestamp ?? time();
+    $rules[$id]['last_updated'] = date('Y-m-d H:i:s', $ts);
+    $rules[$id]['last_status']  = !empty($result['ok']) ? 'OK' : 'Error';
+}
+
+/**
  * Synchronise DNS records for one rule by dispatching to its provider.
  *
  * Algorithm:
@@ -529,23 +564,33 @@ function mwddns_update_rule(array $rule): array
 }
 
 /**
- * Update all rules and persist timestamps/status into config.
+ * Update all rules (or only those monitoring a specific interface) and persist
+ * timestamps/status into config.
  */
-function mwddns_update_all(): array
+function mwddns_update_all(?string $onlyInterface = null): array
 {
-    $rules   = mwddns_get_rules();
-    $results = [];
+    $rules         = mwddns_get_rules();
+    $results       = [];
+    $normalizedInterface = mwddns_normalize_ifname($onlyInterface);
+    $persistNeeded = false;
 
     foreach ($rules as $id => $rule) {
+        if ($normalizedInterface !== null) {
+            $ruleInterfaces = mwddns_rule_interfaces($rule);
+            if (!in_array($normalizedInterface, $ruleInterfaces, true)) {
+                continue;
+            }
+        }
+
         $res = mwddns_update_rule($rule);
         $results[$id] = $res;
 
         // Store last-run metadata in the normalized rules array
-        $rules[$id]['last_updated'] = date('Y-m-d H:i:s');
-        $rules[$id]['last_status']  = $res['ok'] ? 'OK' : 'Error';
+        mwddns_set_rule_metadata($rules, $id, $res);
+        $persistNeeded = true;
     }
 
-    if (!empty($rules)) {
+    if (!empty($rules) && $persistNeeded) {
         mwddns_save_rules($rules);
     }
 

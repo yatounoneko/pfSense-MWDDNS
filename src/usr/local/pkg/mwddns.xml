@@ -76,6 +76,10 @@
             <name>/usr/local/bin/mwddns_cron.php</name>
             <url>%%PKGPATH%%mwddns_cron.php</url>
         </item>
+        <item>
+            <name>/usr/local/etc/rc.newwanip.d/mwddns.sh</name>
+            <url>%%PKGPATH%%rc.newwanip.d/mwddns.sh</url>
+        </item>
     </additional_files_needed>
 
     <!-- ── Lifecycle hooks ───────────────────────────────── -->

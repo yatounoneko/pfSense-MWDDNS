@@ -140,14 +140,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'save') {
             $entry['last_status']  = $allRules[$id]['last_status']  ?? '';
         }
 
+        // Immediately push an update so new/edited rules take effect without waiting for cron.
         if ($editMode) {
             $allRules[$id] = $entry;
+            $targetId = $id;
         } else {
             $allRules[] = $entry;
+            $targetId = array_key_last($allRules);
         }
 
         mwddns_save_rules($allRules);
-        header('Location: /mwddns.php?msg=saved');
+
+        $redirectMsg = 'saved';
+        $rulesWithMeta = mwddns_get_rules();
+        $savedRule = $rulesWithMeta[$targetId] ?? null;
+        if ($savedRule !== null) {
+            $updateResult = mwddns_update_rule($savedRule);
+            mwddns_set_rule_metadata($rulesWithMeta, $targetId, $updateResult);
+            mwddns_save_rules($rulesWithMeta);
+            $redirectMsg = $updateResult['ok'] ? 'updated' : 'update_error';
+        }
+
+        header('Location: /mwddns.php?msg=' . $redirectMsg);
         exit;
     }
     // Fall through to re-render the form with errors.

@@ -17,6 +17,7 @@ require_once('/usr/local/pkg/mwddns.inc');
 
 $rules = mwddns_get_rules();
 ?>
+<div id="mwddns-widget-body">
 <table class="table table-striped table-hover table-condensed">
     <thead>
         <tr>
@@ -97,3 +98,39 @@ $rules = mwddns_get_rules();
         <i class="fa fa-cog"></i> <?= mwddns_t('Manage Rules') ?>
     </a>
 </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var widgetBody = document.getElementById('mwddns-widget-body');
+    if (!widgetBody || !widgetBody.closest) {
+        return;
+    }
+    var widgetTitle = <?= json_encode(mwddns_t('Multi-WAN DDNS')) ?>;
+    var panelContainer = widgetBody.closest('.panel');
+    if (!panelContainer) {
+        return;
+    }
+    var panelTitle = panelContainer.querySelector('.panel-title');
+    if (!panelTitle) {
+        return;
+    }
+    var titleLink = document.createElement('a');
+    titleLink.href = '/mwddns.php';
+
+    var existingNodes = Array.from(panelTitle.childNodes);
+    panelTitle.textContent = '';
+
+    if (existingNodes.length) {
+        var fragment = document.createDocumentFragment();
+        existingNodes.forEach(function(node) {
+            fragment.appendChild(node);
+        });
+        titleLink.appendChild(fragment);
+    } else {
+        titleLink.textContent = widgetTitle;
+    }
+
+    panelTitle.appendChild(titleLink);
+});
+</script>
