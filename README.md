@@ -82,46 +82,17 @@ install.sh                          # Manual installation helper
 > pfSense 2.8.1 does **not** include `git` by default. Use this upload-based flow.
 
 ```sh
-# On your workstation:
-git clone https://github.com/yatounoneko/pfSense-MWDDNS.git
-cd pfSense-MWDDNS
-ssh root@<pfsense-ip> 'mkdir -p /tmp/pfSense-MWDDNS'
-scp -r src install.sh root@<pfsense-ip>:/tmp/pfSense-MWDDNS/
-ssh root@<pfsense-ip> 'cd /tmp/pfSense-MWDDNS && sh install.sh'
+# Upload your download file on pfSense GUI first. (like: https://192.168.0.1/diag_command.php -> Upload File)
+unzip /tmp/pfSense-MWDDNS-(version).zip
+cd pfSense-MWDDNS-(version)/
+sh install.sh
 ```
 
-If you downloaded a ZIP archive instead of cloning:
+Optional (only SSH manually installed on pfSense):
 
 ```sh
-# On your workstation
-unzip pfSense-MWDDNS-*.zip
-cd pfSense-MWDDNS-*/
-ssh root@<pfsense-ip> 'mkdir -p /tmp/pfSense-MWDDNS'
-scp -r src install.sh root@<pfsense-ip>:/tmp/pfSense-MWDDNS/
-ssh root@<pfsense-ip> 'cd /tmp/pfSense-MWDDNS && sh install.sh'
-```
-
-After installation, if the **Services → Multi-WAN DDNS** menu entry does not
-appear immediately, first refresh the browser page; if still missing, log out
-and log back in to the pfSense WebGUI once.
-
-If the menu is still missing (for example, older manual installs that created an
-incomplete `installedpackages` entry), rerun install in the same uploaded folder:
-
-```sh
-ssh root@<pfsense-ip> 'cd /tmp/pfSense-MWDDNS && sh install.sh'
-```
-
-The installer now repairs existing `installedpackages` metadata (`name`,
-`internal_name`, `xml`, `configurationfile`, `version`, `descr`) so the
-**Services** menu can render the package entry correctly.
-
-Optional (only when `git` is manually installed on pfSense):
-
-```sh
-git clone https://github.com/yatounoneko/pfSense-MWDDNS.git
-cd pfSense-MWDDNS
-sh install.sh          # install
+cd pfSense-MWDDNS-(version)/
+sh install.sh                            # install
 sh install.sh --help
 sh install.sh --uninstall                # remove (keep config.xml settings)
 sh install.sh --uninstall --purge-config # remove and purge config.xml settings
