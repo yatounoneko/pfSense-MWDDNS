@@ -13,7 +13,7 @@ return [
 
     /* ── Shared labels ──────────────────────────────────────────────────── */
     'Services'                   => '服务',
-    'Multi-WAN DDNS'             => '多广域网 DDNS',
+    'Multi-WAN DDNS'             => 'Multi-WAN DDNS',
     'Name'                       => '名称',
     'Provider'                   => '服务提供商',
     'Hostname'                   => '主机名',
