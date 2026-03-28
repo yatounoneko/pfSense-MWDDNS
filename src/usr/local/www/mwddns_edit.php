@@ -160,7 +160,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'save') {
             try {
                 $updateResult = mwddns_update_rule($savedRule);
             } catch (Throwable $t) {
-                $updateResult['error'] = 'Unhandled exception during rule update';
+                $updateResult['error'] = 'Exception during rule update: ' . $t->getMessage();
             }
             mwddns_set_rule_metadata($rulesWithMeta, $targetId, $updateResult);
             mwddns_save_rules($rulesWithMeta);
