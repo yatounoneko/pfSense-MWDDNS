@@ -103,7 +103,7 @@ $rules = mwddns_get_rules();
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     var widgetBody = document.getElementById('mwddns-widget-body');
-    if (!widgetBody || !widgetBody.closest) {
+    if (!widgetBody) {
         return;
     }
     var widgetTitle = <?= json_encode(mwddns_t('Multi-WAN DDNS')) ?>;

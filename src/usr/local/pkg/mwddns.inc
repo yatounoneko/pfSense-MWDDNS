@@ -594,7 +594,7 @@ function mwddns_update_all(?string $onlyInterface = null): array
         $persistNeeded = true;
     }
 
-    if (!empty($rules) && $persistNeeded) {
+    if ($persistNeeded) {
         mwddns_save_rules($rules);
     }
 
