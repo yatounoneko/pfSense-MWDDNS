@@ -27,7 +27,8 @@ WWW_EDIT="/usr/local/www/mwddns_edit.php"
 WWW_WIDGET="/usr/local/www/widgets/widgets/mwddns.widget.php"
 CRON_SCRIPT="/usr/local/bin/mwddns_cron.php"
 RC_NEWWAN="/usr/local/etc/rc.newwanip.d/mwddns.sh"
-PKG_VERSION="1.0.0"
+RC_GW_ALARM="/usr/local/etc/rc.gateway_alarm.d/mwddns.sh"
+PKG_VERSION="1.0.1"
 
 # ---------------------------------------------------------------------------
 # usage: print help text and exit
@@ -92,6 +93,9 @@ install_files() {
     # Hook into interface IP change events
     mkdir -p /usr/local/etc/rc.newwanip.d
     install -m 0755 "${SRC}/usr/local/etc/rc.newwanip.d/mwddns.sh" "${RC_NEWWAN}"
+    # Hook into gateway alarm events (dpinger status changes)
+    mkdir -p /usr/local/etc/rc.gateway_alarm.d
+    install -m 0755 "${SRC}/usr/local/etc/rc.gateway_alarm.d/mwddns.sh" "${RC_GW_ALARM}"
 
     # Ensure widget directory exists
     mkdir -p /usr/local/www/widgets/widgets
@@ -345,7 +349,7 @@ uninstall_files() {
 
     # Step 3 – delete plugin files and provider directory
     rm -f "${PKG_INC}" "${PKG_XML}" "${WWW_MAIN}" "${WWW_EDIT}" \
-          "${WWW_WIDGET}" "${CRON_SCRIPT}" "${RC_NEWWAN}"
+          "${WWW_WIDGET}" "${CRON_SCRIPT}" "${RC_NEWWAN}" "${RC_GW_ALARM}"
     rm -rf /usr/local/pkg/mwddns
 
     if [ "${_do_purge}" = "1" ]; then
