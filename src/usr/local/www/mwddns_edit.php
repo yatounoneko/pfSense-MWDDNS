@@ -155,7 +155,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'save') {
         $rulesWithMeta = mwddns_get_rules();
         $savedRule = $rulesWithMeta[$targetId] ?? null;
         if ($savedRule !== null) {
-            $updateResult = mwddns_update_rule($savedRule);
+            // Ensure that exceptions during update do not break the redirect flow.
+            $updateResult = ['ok' => false];
+            try {
+                $updateResult = mwddns_update_rule($savedRule);
+            } catch (Throwable $t) {
+                $updateResult['error'] = 'Unhandled exception during rule update';
+            }
             mwddns_set_rule_metadata($rulesWithMeta, $targetId, $updateResult);
             mwddns_save_rules($rulesWithMeta);
             $redirectMsg = $updateResult['ok'] ? 'updated' : 'update_error';
