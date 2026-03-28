@@ -7,7 +7,7 @@
     <!-- ── Identity ─────────────────────────────────────── -->
     <name>mwddns</name>
     <title>Services: Multi-WAN DDNS</title>
-    <version>1.0.1</version>
+    <version>1.0.2</version>
     <description>Multi-WAN Dynamic DNS for multiple providers (Cloudflare, Alibaba Cloud DNS/ESA, PowerDNS) – monitor multiple WAN interfaces and keep A/AAAA records in sync automatically.</description>
 
     <!-- ── Core include ──────────────────────────────────── -->
@@ -83,6 +83,10 @@
         <item>
             <name>/usr/local/etc/rc.gateway_alarm.d/mwddns.sh</name>
             <url>%%PKGPATH%%rc.gateway_alarm.d/mwddns.sh</url>
+        </item>
+        <item>
+            <name>/usr/local/etc/rc.linkup.d/mwddns.sh</name>
+            <url>%%PKGPATH%%rc.linkup.d/mwddns.sh</url>
         </item>
     </additional_files_needed>
 
