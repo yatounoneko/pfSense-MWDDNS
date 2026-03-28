@@ -26,7 +26,10 @@ WWW_MAIN="/usr/local/www/mwddns.php"
 WWW_EDIT="/usr/local/www/mwddns_edit.php"
 WWW_WIDGET="/usr/local/www/widgets/widgets/mwddns.widget.php"
 CRON_SCRIPT="/usr/local/bin/mwddns_cron.php"
-PKG_VERSION="1.0.0"
+RC_NEWWAN="/usr/local/etc/rc.newwanip.d/mwddns.sh"
+RC_GW_ALARM="/usr/local/etc/rc.gateway_alarm.d/mwddns.sh"
+RC_LINKUP="/usr/local/etc/rc.linkup.d/mwddns.sh"
+PKG_VERSION="1.0.2"
 
 # ---------------------------------------------------------------------------
 # usage: print help text and exit
@@ -87,6 +90,16 @@ install_files() {
     install -m 0644 "${SRC}/usr/local/www/mwddns.php" "${WWW_MAIN}"
     install -m 0644 "${SRC}/usr/local/www/mwddns_edit.php" "${WWW_EDIT}"
     install -m 0755 "${SRC}/usr/local/bin/mwddns_cron.php" "${CRON_SCRIPT}"
+
+    # Hook into interface IP change events
+    mkdir -p /usr/local/etc/rc.newwanip.d
+    install -m 0755 "${SRC}/usr/local/etc/rc.newwanip.d/mwddns.sh" "${RC_NEWWAN}"
+    # Hook into gateway alarm events (dpinger status changes)
+    mkdir -p /usr/local/etc/rc.gateway_alarm.d
+    install -m 0755 "${SRC}/usr/local/etc/rc.gateway_alarm.d/mwddns.sh" "${RC_GW_ALARM}"
+    # Hook into link up/down events (captures IP loss immediately)
+    mkdir -p /usr/local/etc/rc.linkup.d
+    install -m 0755 "${SRC}/usr/local/etc/rc.linkup.d/mwddns.sh" "${RC_LINKUP}"
 
     # Ensure widget directory exists
     mkdir -p /usr/local/www/widgets/widgets
@@ -340,7 +353,7 @@ uninstall_files() {
 
     # Step 3 – delete plugin files and provider directory
     rm -f "${PKG_INC}" "${PKG_XML}" "${WWW_MAIN}" "${WWW_EDIT}" \
-          "${WWW_WIDGET}" "${CRON_SCRIPT}"
+          "${WWW_WIDGET}" "${CRON_SCRIPT}" "${RC_NEWWAN}" "${RC_GW_ALARM}" "${RC_LINKUP}"
     rm -rf /usr/local/pkg/mwddns
 
     if [ "${_do_purge}" = "1" ]; then
