@@ -515,7 +515,9 @@ function mwddns_set_rule_metadata(array &$rules, int $id, array $result, ?int $t
  *
  * $ipsByType shape passed to providers:
  *   ['A' => ['1.2.3.4' => true, …], 'AAAA' => ['2001:db8::1' => true, …]]
- * Only types that are configured AND have at least one available IP are included.
+ * All configured record types are included, even when no IP is currently
+ * available on monitored interfaces (to allow providers to delete stale
+ * records).
  *
  * Returns: ['ok' => bool, 'message' => string, 'actions' => [...]]
  */
@@ -538,26 +540,28 @@ function mwddns_update_rule(array $rule): array
     }
 
     $recordTypes = mwddns_rule_record_types($rule);
+    if (empty($recordTypes)) {
+        return ['ok' => false, 'message' => 'Rule has no record types configured.', 'actions' => []];
+    }
 
-    // Gather current IPs by record type
+    // Gather current IPs by record type (include empty sets so providers can delete stale records)
     $ipsByType = [];
+    foreach ($recordTypes as $type) {
+        $ipsByType[$type] = [];
+    }
     foreach (mwddns_rule_interfaces($rule) as $ifname) {
-        if (in_array('A', $recordTypes, true)) {
+        if (isset($ipsByType['A'])) {
             $ip4 = mwddns_get_interface_ip($ifname);
             if ($ip4 !== null) {
                 $ipsByType['A'][$ip4] = true;
             }
         }
-        if (in_array('AAAA', $recordTypes, true)) {
+        if (isset($ipsByType['AAAA'])) {
             $ip6 = mwddns_get_interface_ipv6($ifname);
             if ($ip6 !== null) {
                 $ipsByType['AAAA'][$ip6] = true;
             }
         }
-    }
-
-    if (empty($ipsByType)) {
-        return ['ok' => false, 'message' => 'No valid IPs found on monitored interfaces for the configured record types.', 'actions' => []];
     }
 
     return $fn($ipsByType, $rule);
