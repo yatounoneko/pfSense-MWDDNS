@@ -543,7 +543,9 @@ function mwddns_update_rule(array $rule): array
 
     $recordTypes = mwddns_rule_record_types($rule);
     if (empty($recordTypes)) {
-        return ['ok' => false, 'message' => 'Rule has no record types configured.', 'actions' => []];
+        $ruleLabel = $rule['name'] ?? ($rule['hostname'] ?? '');
+        $ruleLabel = $ruleLabel !== '' ? $ruleLabel : 'unknown rule';
+        return ['ok' => false, 'message' => "Rule has no record types configured ({$ruleLabel}).", 'actions' => []];
     }
 
     // Gather current IPs by record type (include empty sets so providers can delete stale records)
@@ -633,7 +635,7 @@ function mwddns_enable_watcher(): void
     }
     // Ensure rcvar exists and is enabled; quiet errors if sysrc is absent
     $rcvarCmd = '/usr/sbin/sysrc -q ' . escapeshellarg(MWDDNS_WATCHER_RCVAR . '=YES');
-    $rcdCmd   = escapeshellarg(MWDDNS_WATCHER_RC) . ' restart >/dev/null 2>&1';
+    $rcdCmd   = escapeshellcmd(MWDDNS_WATCHER_RC) . ' restart';
     @mwexec($rcvarCmd);
     @mwexec($rcdCmd);
 }
@@ -647,7 +649,7 @@ function mwddns_disable_watcher(): void
         return;
     }
     $rcvarCmd = '/usr/sbin/sysrc -q ' . escapeshellarg(MWDDNS_WATCHER_RCVAR . '=NO');
-    $rcdCmd   = escapeshellarg(MWDDNS_WATCHER_RC) . ' stop >/dev/null 2>&1';
+    $rcdCmd   = escapeshellcmd(MWDDNS_WATCHER_RC) . ' stop';
     @mwexec($rcdCmd);
     @mwexec($rcvarCmd);
 }
