@@ -635,7 +635,7 @@ function mwddns_enable_watcher(): void
     }
     // Ensure rcvar exists and is enabled; quiet errors if sysrc is absent
     $rcvarCmd = '/usr/sbin/sysrc -q ' . escapeshellarg(MWDDNS_WATCHER_RCVAR . '=YES');
-    $rcdCmd   = escapeshellcmd(MWDDNS_WATCHER_RC) . ' restart';
+    $rcdCmd   = MWDDNS_WATCHER_RC . ' restart';
     @mwexec($rcvarCmd);
     @mwexec($rcdCmd);
 }
@@ -649,7 +649,7 @@ function mwddns_disable_watcher(): void
         return;
     }
     $rcvarCmd = '/usr/sbin/sysrc -q ' . escapeshellarg(MWDDNS_WATCHER_RCVAR . '=NO');
-    $rcdCmd   = escapeshellcmd(MWDDNS_WATCHER_RC) . ' stop';
+    $rcdCmd   = MWDDNS_WATCHER_RC . ' stop';
     @mwexec($rcdCmd);
     @mwexec($rcvarCmd);
 }
