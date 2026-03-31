@@ -29,7 +29,8 @@ CRON_SCRIPT="/usr/local/bin/mwddns_cron.php"
 RC_NEWWAN="/usr/local/etc/rc.newwanip.d/mwddns.sh"
 RC_GW_ALARM="/usr/local/etc/rc.gateway_alarm.d/mwddns.sh"
 RC_LINKUP="/usr/local/etc/rc.linkup.d/mwddns.sh"
-PKG_VERSION="1.0.2"
+DHCLIENT_HOOK="/etc/dhclient-exit-hooks"
+PKG_VERSION="1.0.3"
 
 # ---------------------------------------------------------------------------
 # usage: print help text and exit
@@ -100,6 +101,8 @@ install_files() {
     # Hook into link up/down events (captures IP loss immediately)
     mkdir -p /usr/local/etc/rc.linkup.d
     install -m 0755 "${SRC}/usr/local/etc/rc.linkup.d/mwddns.sh" "${RC_LINKUP}"
+    # Hook into dhclient exit events (release/expire/fail) to catch IP loss when link stays up
+    install -m 0755 "${SRC}/usr/local/pkg/mwddns/dhclient-exit-hooks" "${DHCLIENT_HOOK}"
 
     # Ensure widget directory exists
     mkdir -p /usr/local/www/widgets/widgets
@@ -353,7 +356,7 @@ uninstall_files() {
 
     # Step 3 – delete plugin files and provider directory
     rm -f "${PKG_INC}" "${PKG_XML}" "${WWW_MAIN}" "${WWW_EDIT}" \
-          "${WWW_WIDGET}" "${CRON_SCRIPT}" "${RC_NEWWAN}" "${RC_GW_ALARM}" "${RC_LINKUP}"
+          "${WWW_WIDGET}" "${CRON_SCRIPT}" "${RC_NEWWAN}" "${RC_GW_ALARM}" "${RC_LINKUP}" "${DHCLIENT_HOOK}"
     rm -rf /usr/local/pkg/mwddns
 
     if [ "${_do_purge}" = "1" ]; then
