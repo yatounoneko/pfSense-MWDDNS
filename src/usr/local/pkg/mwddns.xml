@@ -93,10 +93,6 @@
             <url>%%PKGPATH%%rc.linkup.d/mwddns.sh</url>
         </item>
         <item>
-            <name>/etc/dhclient-exit-hooks</name>
-            <url>%%PKGPATH%%dhclient-exit-hooks</url>
-        </item>
-        <item>
             <name>/usr/local/etc/rc.d/mwddns_watcher</name>
             <url>%%PKGPATH%%mwddns_watcher</url>
         </item>

@@ -26,6 +26,8 @@ define('MWDDNS_DNS_CACHE_TTL', 60);
 define('MWDDNS_DNS_CACHE_DIR', '/var/run/mwddns');
 define('MWDDNS_WATCHER_RC',   '/usr/local/etc/rc.d/mwddns_watcher');
 define('MWDDNS_WATCHER_RCVAR','mwddns_watcher_enable');
+define('MWDDNS_DHCLIENT_HOOK', '/etc/dhclient-exit-hooks');
+define('MWDDNS_DHCLIENT_HOOK_BACKUP', '/etc/dhclient-exit-hooks.mwddns.bak');
 
 /* =========================================================
  * i18n helpers  (GUI only; CLI/install.sh stays English)
@@ -626,11 +628,65 @@ function mwddns_remove_cron(): void
 }
 
 /**
+ * Install a dhclient exit hook without clobbering existing hooks.
+ * If an existing hook is present, it is backed up and sourced after the MWDDNS block.
+ */
+function mwddns_install_dhclient_hook(): void
+{
+    $hookBody = <<<'HOOK'
+# mwddns dhclient hook – ensure IP loss/renewal triggers immediate DNS sync
+CMD="/usr/local/bin/mwddns_cron.php"
+IFACE="${interface:-${new_interface:-${old_interface:-${1:-}}}}"
+
+if [ -x "${CMD}" ]; then
+    if [ -n "${IFACE}" ]; then
+        "${CMD}" "${IFACE}" >/dev/null 2>&1 &
+    else
+        "${CMD}" >/dev/null 2>&1 &
+    fi
+fi
+HOOK;
+
+    $existingHook = file_exists(MWDDNS_DHCLIENT_HOOK) ? @file_get_contents(MWDDNS_DHCLIENT_HOOK) : '';
+    $hasMarker = is_string($existingHook) && strpos($existingHook, 'mwddns dhclient hook') !== false;
+    $backupCreated = file_exists(MWDDNS_DHCLIENT_HOOK_BACKUP);
+
+    if (!$hasMarker && !$backupCreated && $existingHook !== '' && $existingHook !== false) {
+        @copy(MWDDNS_DHCLIENT_HOOK, MWDDNS_DHCLIENT_HOOK_BACKUP);
+        $backupCreated = file_exists(MWDDNS_DHCLIENT_HOOK_BACKUP);
+    }
+
+    $wrapper = "#!/bin/sh\n" . $hookBody . "\n";
+    if ($backupCreated) {
+        $wrapper .= '. ' . MWDDNS_DHCLIENT_HOOK_BACKUP . "\n";
+    }
+
+    @file_put_contents(MWDDNS_DHCLIENT_HOOK, $wrapper);
+    @chmod(MWDDNS_DHCLIENT_HOOK, 0755);
+}
+
+/**
+ * Remove the dhclient hook and restore a backed-up hook if one exists.
+ */
+function mwddns_remove_dhclient_hook(): void
+{
+    if (file_exists(MWDDNS_DHCLIENT_HOOK_BACKUP)) {
+        @copy(MWDDNS_DHCLIENT_HOOK_BACKUP, MWDDNS_DHCLIENT_HOOK);
+        @unlink(MWDDNS_DHCLIENT_HOOK_BACKUP);
+    } else {
+        @unlink(MWDDNS_DHCLIENT_HOOK);
+    }
+}
+
+/**
  * Enable and restart the gateway watcher service if present.
  */
 function mwddns_enable_watcher(): void
 {
     if (!file_exists(MWDDNS_WATCHER_RC)) {
+        return;
+    }
+    if (!preg_match('/^[A-Za-z0-9_]+$/', MWDDNS_WATCHER_RCVAR)) {
         return;
     }
     // Ensure rcvar exists and is enabled; quiet errors if sysrc is absent
@@ -648,6 +704,9 @@ function mwddns_disable_watcher(): void
     if (!file_exists(MWDDNS_WATCHER_RC)) {
         return;
     }
+    if (!preg_match('/^[A-Za-z0-9_]+$/', MWDDNS_WATCHER_RCVAR)) {
+        return;
+    }
     $rcvarCmd = '/usr/sbin/sysrc -q ' . escapeshellarg(MWDDNS_WATCHER_RCVAR) . '=' . escapeshellarg('NO');
     $rcdCmd   = MWDDNS_WATCHER_RC . ' stop';
     @mwexec($rcdCmd);
@@ -659,6 +718,7 @@ function mwddns_install(): void
 {
     mwddns_install_cron();
     mwddns_enable_watcher();
+    mwddns_install_dhclient_hook();
 }
 
 /** Called by the pfSense package manager before removal. */
@@ -666,4 +726,5 @@ function mwddns_deinstall(): void
 {
     mwddns_remove_cron();
     mwddns_disable_watcher();
+    mwddns_remove_dhclient_hook();
 }
