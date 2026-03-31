@@ -590,8 +590,10 @@ function mwddns_update_all(?string $onlyInterface = null): array
         $results[$id] = $res;
 
         // Store last-run metadata in the normalized rules array
-        mwddns_set_rule_metadata($rules, $id, $res);
-        $persistNeeded = true;
+        if (array_key_exists($id, $rules)) {
+            mwddns_set_rule_metadata($rules, $id, $res);
+            $persistNeeded = true;
+        }
     }
 
     if ($persistNeeded) {
