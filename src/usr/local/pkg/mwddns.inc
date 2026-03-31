@@ -632,8 +632,10 @@ function mwddns_enable_watcher(): void
         return;
     }
     // Ensure rcvar exists and is enabled; quiet errors if sysrc is absent
-    @mwexec('/usr/sbin/sysrc -q ' . MWDDNS_WATCHER_RCVAR . '=YES');
-    @mwexec(MWDDNS_WATCHER_RC . ' restart >/dev/null 2>&1');
+    $rcvarCmd = '/usr/sbin/sysrc -q ' . escapeshellarg(MWDDNS_WATCHER_RCVAR . '=YES');
+    $rcdCmd   = escapeshellarg(MWDDNS_WATCHER_RC) . ' restart >/dev/null 2>&1';
+    @mwexec($rcvarCmd);
+    @mwexec($rcdCmd);
 }
 
 /**
@@ -644,8 +646,10 @@ function mwddns_disable_watcher(): void
     if (!file_exists(MWDDNS_WATCHER_RC)) {
         return;
     }
-    @mwexec(MWDDNS_WATCHER_RC . ' stop >/dev/null 2>&1');
-    @mwexec('/usr/sbin/sysrc -q ' . MWDDNS_WATCHER_RCVAR . '=NO');
+    $rcvarCmd = '/usr/sbin/sysrc -q ' . escapeshellarg(MWDDNS_WATCHER_RCVAR . '=NO');
+    $rcdCmd   = escapeshellarg(MWDDNS_WATCHER_RC) . ' stop >/dev/null 2>&1';
+    @mwexec($rcdCmd);
+    @mwexec($rcvarCmd);
 }
 
 /** Called by the pfSense package manager after installation. */

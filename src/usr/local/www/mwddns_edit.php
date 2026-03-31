@@ -146,7 +146,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'save') {
             $targetId = $id;
         } else {
             $allRules[] = $entry;
-            $targetId = array_key_last($allRules);
+            $targetId = count($allRules) - 1;
         }
 
         mwddns_save_rules($allRules);
