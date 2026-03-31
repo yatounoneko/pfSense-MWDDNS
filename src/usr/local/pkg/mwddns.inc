@@ -612,6 +612,26 @@ function mwddns_update_all(?string $onlyInterface = null): array
  * ========================================================= */
 
 /**
+ * Validate the watcher rcvar name to avoid shell injection.
+ */
+function mwddns_valid_watcher_rcvar(): bool
+{
+    return preg_match('/^[A-Za-z0-9_]+$/', MWDDNS_WATCHER_RCVAR) === 1;
+}
+
+/**
+ * Set the watcher rcvar to a given value (YES/NO).
+ */
+function mwddns_set_watcher_rcvar(string $value): void
+{
+    if (!mwddns_valid_watcher_rcvar()) {
+        return;
+    }
+    $rcvarCmd = '/usr/sbin/sysrc -q ' . escapeshellarg(MWDDNS_WATCHER_RCVAR) . '=' . escapeshellarg($value);
+    @mwexec($rcvarCmd);
+}
+
+/**
  * Install (or refresh) the periodic cron job.
  */
 function mwddns_install_cron(): void
@@ -651,7 +671,7 @@ HOOK;
     $hasMarker = is_string($existingHook) && strpos($existingHook, 'mwddns dhclient hook') !== false;
     $backupCreated = file_exists(MWDDNS_DHCLIENT_HOOK_BACKUP);
 
-    if (!$hasMarker && !$backupCreated && $existingHook !== '' && $existingHook !== false) {
+    if (!$hasMarker && !$backupCreated && $existingHook !== '') {
         @copy(MWDDNS_DHCLIENT_HOOK, MWDDNS_DHCLIENT_HOOK_BACKUP);
         $backupCreated = file_exists(MWDDNS_DHCLIENT_HOOK_BACKUP);
     }
@@ -686,13 +706,9 @@ function mwddns_enable_watcher(): void
     if (!file_exists(MWDDNS_WATCHER_RC)) {
         return;
     }
-    if (!preg_match('/^[A-Za-z0-9_]+$/', MWDDNS_WATCHER_RCVAR)) {
-        return;
-    }
     // Ensure rcvar exists and is enabled; quiet errors if sysrc is absent
-    $rcvarCmd = '/usr/sbin/sysrc -q ' . escapeshellarg(MWDDNS_WATCHER_RCVAR) . '=' . escapeshellarg('YES');
     $rcdCmd   = MWDDNS_WATCHER_RC . ' restart';
-    @mwexec($rcvarCmd);
+    mwddns_set_watcher_rcvar('YES');
     @mwexec($rcdCmd);
 }
 
@@ -704,13 +720,9 @@ function mwddns_disable_watcher(): void
     if (!file_exists(MWDDNS_WATCHER_RC)) {
         return;
     }
-    if (!preg_match('/^[A-Za-z0-9_]+$/', MWDDNS_WATCHER_RCVAR)) {
-        return;
-    }
-    $rcvarCmd = '/usr/sbin/sysrc -q ' . escapeshellarg(MWDDNS_WATCHER_RCVAR) . '=' . escapeshellarg('NO');
     $rcdCmd   = MWDDNS_WATCHER_RC . ' stop';
     @mwexec($rcdCmd);
-    @mwexec($rcvarCmd);
+    mwddns_set_watcher_rcvar('NO');
 }
 
 /** Called by the pfSense package manager after installation. */
