@@ -24,6 +24,8 @@ define('MWDDNS_CRON_CMD',     '/usr/local/bin/php /usr/local/bin/mwddns_cron.php
 define('MWDDNS_CRON_MINUTE',  '*/5');
 define('MWDDNS_DNS_CACHE_TTL', 60);
 define('MWDDNS_DNS_CACHE_DIR', '/var/run/mwddns');
+define('MWDDNS_WATCHER_RC',   '/usr/local/etc/rc.d/mwddns_watcher');
+define('MWDDNS_WATCHER_RCVAR','mwddns_watcher_enable');
 
 /* =========================================================
  * i18n helpers  (GUI only; CLI/install.sh stays English)
@@ -621,14 +623,41 @@ function mwddns_remove_cron(): void
     install_cron_job(MWDDNS_CRON_CMD, false);
 }
 
+/**
+ * Enable and restart the gateway watcher service if present.
+ */
+function mwddns_enable_watcher(): void
+{
+    if (!file_exists(MWDDNS_WATCHER_RC)) {
+        return;
+    }
+    // Ensure rcvar exists and is enabled; quiet errors if sysrc is absent
+    @mwexec('/usr/sbin/sysrc -q ' . MWDDNS_WATCHER_RCVAR . '=YES');
+    @mwexec(MWDDNS_WATCHER_RC . ' restart >/dev/null 2>&1');
+}
+
+/**
+ * Stop and disable the gateway watcher service if present.
+ */
+function mwddns_disable_watcher(): void
+{
+    if (!file_exists(MWDDNS_WATCHER_RC)) {
+        return;
+    }
+    @mwexec(MWDDNS_WATCHER_RC . ' stop >/dev/null 2>&1');
+    @mwexec('/usr/sbin/sysrc -q ' . MWDDNS_WATCHER_RCVAR . '=NO');
+}
+
 /** Called by the pfSense package manager after installation. */
 function mwddns_install(): void
 {
     mwddns_install_cron();
+    mwddns_enable_watcher();
 }
 
 /** Called by the pfSense package manager before removal. */
 function mwddns_deinstall(): void
 {
     mwddns_remove_cron();
+    mwddns_disable_watcher();
 }
