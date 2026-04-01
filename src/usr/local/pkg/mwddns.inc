@@ -693,9 +693,8 @@ function mwddns_update_rule(array $rule): array
 
     $recordTypes = mwddns_rule_record_types($rule);
     if (empty($recordTypes)) {
-        $ruleLabel = $rule['name'] ?? ($rule['hostname'] ?? '');
-        $ruleLabel = $ruleLabel !== '' ? $ruleLabel : 'unknown rule';
-        return ['ok' => false, 'message' => "Rule has no record types configured ({$ruleLabel}).", 'actions' => []];
+        $label = $ruleLabel !== '' ? $ruleLabel : 'unknown rule';
+        return ['ok' => false, 'message' => "Rule has no record types configured ({$label}).", 'actions' => []];
     }
 
     // Gather current IPs by record type (empty sets are still passed so providers can delete stale records).
