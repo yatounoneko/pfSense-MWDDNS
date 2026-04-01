@@ -67,6 +67,7 @@ install.sh                          # Manual installation helper
 ## Requirements
 
 * pfSense CE 2.7.x / 2.8.x (FreeBSD 14, PHP 8.x)
+* Python 3.11 (bundled with pfSense 2.7/2.8; used by the gateway watcher service)
 * Credentials/API access for **at least one supported DNS provider**:
   * Cloudflare: API Token + Zone ID
   * Alibaba Cloud DNS (intl/CN): AccessKey ID + AccessKey Secret + Root Domain
