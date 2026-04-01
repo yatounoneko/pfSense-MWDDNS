@@ -106,7 +106,7 @@ document.addEventListener('DOMContentLoaded', function() {
     if (!widgetBody) {
         return;
     }
-    var widgetTitle = <?= json_encode(mwddns_t('Multi-WAN DDNS')) ?>;
+    var widgetTitle = 'Multi-WAN DDNS';
     var panelContainer = widgetBody.closest('.panel');
     if (!panelContainer) {
         return;
@@ -118,19 +118,8 @@ document.addEventListener('DOMContentLoaded', function() {
     var titleLink = document.createElement('a');
     titleLink.href = '/mwddns.php';
 
-    var existingNodes = Array.from(panelTitle.childNodes);
     panelTitle.textContent = '';
-
-    if (existingNodes.length) {
-        var fragment = document.createDocumentFragment();
-        existingNodes.forEach(function(node) {
-            fragment.appendChild(node);
-        });
-        titleLink.appendChild(fragment);
-    } else {
-        titleLink.textContent = widgetTitle;
-    }
-
+    titleLink.textContent = widgetTitle;
     panelTitle.appendChild(titleLink);
 });
 </script>

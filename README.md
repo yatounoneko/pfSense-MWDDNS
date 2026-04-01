@@ -16,7 +16,7 @@ DNS providers.
 | 3 | **IPv6/AAAA support** – select A, AAAA, or both per rule; interfaces without the requested address type are silently skipped |
 | 4 | **Pluggable DNS providers** – Cloudflare, Alibaba Cloud DNS (International), Alibaba Cloud DNS (China), Alibaba Cloud ESA, PowerDNS |
 | 5 | **Portal / status page** (`Services → Multi-WAN DDNS`) shows custom name, provider, hostname, per-interface IPv4/IPv6 with colour indicators: 🟢 green = DNS matches, 🔴 red = DNS mismatch |
-| 6 | **Dashboard widget** with the same colour-coded status |
+| 6 | **Dashboard widget** (titled “Multi-WAN DDNS”) with the same colour-coded status |
 | 7 | **Force Update** button on every rule's edit page for instant sync |
 | 8 | Cron job runs every 5 minutes in the background |
 | 9 | Written in **PHP 8 + shell** – runs on pfSense 2.7/2.8 with zero extra dependencies |
