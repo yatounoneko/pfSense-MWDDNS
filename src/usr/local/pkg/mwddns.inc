@@ -319,7 +319,9 @@ function mwddns_get_gateway_statuses(array $thresholds): array
     $statuses = [];
     foreach (glob('/var/run/dpinger_*.sock') ?: [] as $socketPath) {
         $basename = basename($socketPath);
-        $gatewayName = '';
+        if (strpos($basename, 'dpinger_') !== 0) {
+            continue;
+        }
         $parts = explode('~', str_replace('dpinger_', '', $basename), 2);
         $gatewayName = $parts[0] ?? '';
         if ($gatewayName === '') {
@@ -327,18 +329,22 @@ function mwddns_get_gateway_statuses(array $thresholds): array
         }
 
         $status = 'down';
-        $contents = @file_get_contents($socketPath);
-        if ($contents !== false) {
-            $fields = preg_split('/\s+/', trim($contents));
-            if (count($fields) >= 4) {
-                $latencyUs = (int)$fields[1];
-                $lossPct   = (int)$fields[3];
-                $gwThresholds = $thresholds[$gatewayName] ?? [];
-                $latencyHighMs = (int)($gwThresholds['latencyhigh'] ?? 500);
-                $lossHighPct   = (int)($gwThresholds['losshigh'] ?? 20);
-                if (($latencyUs / 1000) < $latencyHighMs && $lossPct < $lossHighPct) {
-                    $status = 'online';
-                }
+        $contents = file_get_contents($socketPath);
+        if ($contents === false) {
+            $statuses[$gatewayName] = $status;
+            continue;
+        }
+
+        // dpinger socket format: "<timestamp> <latency_us> <loss_avg> <loss_pct> ..."
+        $fields = preg_split('/\s+/', trim($contents));
+        if (count($fields) >= 4) {
+            $latencyUs = (int)$fields[1];
+            $lossPct   = (int)$fields[3];
+            $gwThresholds = $thresholds[$gatewayName] ?? [];
+            $latencyHighMs = (int)($gwThresholds['latencyhigh'] ?? 500);
+            $lossHighPct   = (int)($gwThresholds['losshigh'] ?? 20);
+            if (($latencyUs / 1000) < $latencyHighMs && $lossPct < $lossHighPct) {
+                $status = 'online';
             }
         }
 
@@ -682,7 +688,7 @@ function mwddns_update_rule(array $rule): array
         return ['ok' => false, 'message' => "Rule has no record types configured ({$ruleLabel}).", 'actions' => []];
     }
 
-    // Gather current IPs by record type (include empty sets so providers can delete stale records)
+    // Gather current IPs by record type (empty sets are still passed so providers can delete stale records).
     // Use gateway health detection identical to the reference gateway_watcher.py to exclude unhealthy gateways.
     $ipsByType = mwddns_collect_ips_for_rule($recordTypes, $rule);
 
