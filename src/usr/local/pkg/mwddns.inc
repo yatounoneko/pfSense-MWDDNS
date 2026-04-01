@@ -260,6 +260,140 @@ function mwddns_get_interface_ipv6(string $ifname): ?string
 }
 
 /**
+ * Load gateway latency/loss thresholds from config.xml.
+ * Mirrors the logic used by gateway_watcher.py (reference project).
+ */
+function mwddns_get_gateway_thresholds(): array
+{
+    global $config;
+
+    $thresholds = [];
+    $defaults = [
+        'latencyhigh' => (int)($config['gateways']['latencyhigh'] ?? 500),
+        'losshigh'    => (int)($config['gateways']['losshigh'] ?? 20),
+    ];
+
+    if (!empty($config['gateways']['gateway_item']) && is_array($config['gateways']['gateway_item'])) {
+        foreach ($config['gateways']['gateway_item'] as $gw) {
+            $name = $gw['name'] ?? '';
+            if ($name === '') {
+                continue;
+            }
+            $thresholds[$name] = [
+                'latencyhigh' => (int)($gw['latencyhigh'] ?? $defaults['latencyhigh']),
+                'losshigh'    => (int)($gw['losshigh'] ?? $defaults['losshigh']),
+            ];
+        }
+    }
+
+    return $thresholds;
+}
+
+/**
+ * Map gateway name to interface (pfSense logical interface key).
+ */
+function mwddns_gateway_interface_map(): array
+{
+    global $config;
+    $map = [];
+
+    if (!empty($config['gateways']['gateway_item']) && is_array($config['gateways']['gateway_item'])) {
+        foreach ($config['gateways']['gateway_item'] as $gw) {
+            $name = $gw['name'] ?? '';
+            $iface = $gw['interface'] ?? '';
+            if ($name !== '' && $iface !== '') {
+                $map[$name] = $iface;
+            }
+        }
+    }
+
+    return $map;
+}
+
+/**
+ * Read dpinger sockets and determine gateway status (online/down) using the
+ * same thresholds/logic as gateway_watcher.py from the reference project.
+ */
+function mwddns_get_gateway_statuses(array $thresholds): array
+{
+    $statuses = [];
+    foreach (glob('/var/run/dpinger_*.sock') ?: [] as $socketPath) {
+        $basename = basename($socketPath);
+        $gatewayName = '';
+        $parts = explode('~', str_replace('dpinger_', '', $basename), 2);
+        $gatewayName = $parts[0] ?? '';
+        if ($gatewayName === '') {
+            continue;
+        }
+
+        $status = 'down';
+        $contents = @file_get_contents($socketPath);
+        if ($contents !== false) {
+            $fields = preg_split('/\s+/', trim($contents));
+            if (count($fields) >= 4) {
+                $latencyUs = (int)$fields[1];
+                $lossPct   = (int)$fields[3];
+                $gwThresholds = $thresholds[$gatewayName] ?? [];
+                $latencyHighMs = (int)($gwThresholds['latencyhigh'] ?? 500);
+                $lossHighPct   = (int)($gwThresholds['losshigh'] ?? 20);
+                if (($latencyUs / 1000) < $latencyHighMs && $lossPct < $lossHighPct) {
+                    $status = 'online';
+                }
+            }
+        }
+
+        $statuses[$gatewayName] = $status;
+    }
+
+    return $statuses;
+}
+
+/**
+ * Collect IPs by record type for a rule, filtering out interfaces whose
+ * gateways are not healthy per dpinger thresholds (reference watcher logic).
+ */
+function mwddns_collect_ips_for_rule(array $recordTypes, array $rule): array
+{
+    $ipsByType = [];
+    foreach ($recordTypes as $type) {
+        $ipsByType[$type] = [];
+    }
+
+    $thresholds = mwddns_get_gateway_thresholds();
+    $gatewayStatuses = mwddns_get_gateway_statuses($thresholds);
+    $gatewayToIf = mwddns_gateway_interface_map();
+    $ifToGateway = [];
+    foreach ($gatewayToIf as $gwName => $iface) {
+        if (!isset($ifToGateway[$iface])) {
+            $ifToGateway[$iface] = $gwName;
+        }
+    }
+
+    foreach (mwddns_rule_interfaces($rule) as $ifname) {
+        $gwName = $ifToGateway[$ifname] ?? '';
+        $gwStatus = $gwName !== '' ? ($gatewayStatuses[$gwName] ?? 'down') : 'down';
+        if ($gwStatus !== 'online') {
+            continue; // skip interfaces whose gateway is unhealthy
+        }
+
+        if (isset($ipsByType['A'])) {
+            $ip4 = mwddns_get_interface_ip($ifname);
+            if ($ip4 !== null) {
+                $ipsByType['A'][$ip4] = true;
+            }
+        }
+        if (isset($ipsByType['AAAA'])) {
+            $ip6 = mwddns_get_interface_ipv6($ifname);
+            if ($ip6 !== null) {
+                $ipsByType['AAAA'][$ip6] = true;
+            }
+        }
+    }
+
+    return $ipsByType;
+}
+
+/**
  * Return the human-readable description of an interface key.
  */
 function mwddns_get_interface_desc(string $ifname): string
@@ -549,24 +683,8 @@ function mwddns_update_rule(array $rule): array
     }
 
     // Gather current IPs by record type (include empty sets so providers can delete stale records)
-    $ipsByType = [];
-    foreach ($recordTypes as $type) {
-        $ipsByType[$type] = [];
-    }
-    foreach (mwddns_rule_interfaces($rule) as $ifname) {
-        if (isset($ipsByType['A'])) {
-            $ip4 = mwddns_get_interface_ip($ifname);
-            if ($ip4 !== null) {
-                $ipsByType['A'][$ip4] = true;
-            }
-        }
-        if (isset($ipsByType['AAAA'])) {
-            $ip6 = mwddns_get_interface_ipv6($ifname);
-            if ($ip6 !== null) {
-                $ipsByType['AAAA'][$ip6] = true;
-            }
-        }
-    }
+    // Use gateway health detection identical to the reference gateway_watcher.py to exclude unhealthy gateways.
+    $ipsByType = mwddns_collect_ips_for_rule($recordTypes, $rule);
 
     return $fn($ipsByType, $rule);
 }

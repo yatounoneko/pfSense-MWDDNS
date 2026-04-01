@@ -1,4 +1,4 @@
-#!/usr/local/bin/python3
+#!/usr/local/bin/python3.11
 """
 mwddns_gateway_watcher.py – Gateway/Interface health watcher for MWDDNS
 
