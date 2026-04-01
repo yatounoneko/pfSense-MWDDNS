@@ -377,6 +377,7 @@ function mwddns_collect_ips_for_rule(array $recordTypes, array $rule): array
 
     foreach (mwddns_rule_interfaces($rule) as $ifname) {
         $gwName = $ifToGateway[$ifname] ?? '';
+        // Treat interfaces without a mapped gateway as down to avoid propagating unknown/invalid IPs.
         $gwStatus = $gwName !== '' ? ($gatewayStatuses[$gwName] ?? 'down') : 'down';
         if ($gwStatus !== 'online') {
             continue; // skip interfaces whose gateway is unhealthy
@@ -689,7 +690,9 @@ function mwddns_update_rule(array $rule): array
     }
 
     // Gather current IPs by record type (empty sets are still passed so providers can delete stale records).
-    // Use gateway health detection identical to the reference gateway_watcher.py to exclude unhealthy gateways.
+    // Use gateway health detection identical to the reference gateway_watcher.py
+    // (https://raw.githubusercontent.com/yatounoneko/pfSense-MWAN-DDNS/refs/heads/main/gateway_watcher.py)
+    // to exclude unhealthy gateways.
     $ipsByType = mwddns_collect_ips_for_rule($recordTypes, $rule);
 
     return $fn($ipsByType, $rule);
