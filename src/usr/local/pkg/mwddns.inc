@@ -27,6 +27,14 @@ define('MWDDNS_DNS_CACHE_DIR', '/var/run/mwddns');
 define('MWDDNS_WATCHER_RC',   '/usr/local/etc/rc.d/mwddns_watcher');
 define('MWDDNS_WATCHER_RCVAR','mwddns_watcher_enable');
 
+/**
+ * Write a line to syslog with a consistent prefix.
+ */
+function mwddns_log(string $message, int $level = LOG_INFO): void
+{
+    @syslog($level, '[MWDDNS] ' . $message);
+}
+
 /* =========================================================
  * i18n helpers  (GUI only; CLI/install.sh stays English)
  * ========================================================= */
@@ -668,6 +676,7 @@ function mwddns_update_rule(array $rule): array
 {
     $provider = $rule['provider'] ?? 'cloudflare';  // backward-compat default
     $host     = $rule['hostname'] ?? '';
+    $ruleLabel = $rule['name'] ?? $host;
 
     if ($host === '') {
         return ['ok' => false, 'message' => 'Rule is missing hostname.', 'actions' => []];
@@ -695,7 +704,15 @@ function mwddns_update_rule(array $rule): array
     // to exclude unhealthy gateways.
     $ipsByType = mwddns_collect_ips_for_rule($recordTypes, $rule);
 
-    return $fn($ipsByType, $rule);
+    mwddns_log("Updating {$ruleLabel} ({$host}) via {$provider}");
+    $result = $fn($ipsByType, $rule);
+    if (!empty($result['actions']) && is_array($result['actions'])) {
+        mwddns_log_actions($result['actions'], $ruleLabel, $host);
+    }
+    $message = $result['message'] ?? '';
+    mwddns_log("Update {$ruleLabel} ({$host}) " . (!empty($result['ok']) ? 'OK' : 'FAIL') . ($message !== '' ? ": {$message}" : ''),
+        !empty($result['ok']) ? LOG_INFO : LOG_ERR);
+    return $result;
 }
 
 /**
@@ -730,6 +747,41 @@ function mwddns_update_all(?string $onlyInterface = null): array
     }
 
     return $results;
+}
+
+/**
+ * Emit syslog lines for each provider action.
+ */
+function mwddns_log_actions(array $actions, string $ruleLabel, string $hostname = ''): void
+{
+    foreach ($actions as $action) {
+        $verb = $action['action'] ?? 'action';
+        $ip   = $action['ip'] ?? '';
+        $type = $action['type'] ?? '';
+        $ok   = !empty($action['ok']);
+        $err  = trim($action['error'] ?? '');
+
+        $parts = [];
+        if ($type !== '') {
+            $parts[] = $type;
+        }
+        if ($ip !== '') {
+            $parts[] = $ip;
+        }
+        if ($hostname !== '') {
+            $parts[] = "for {$hostname}";
+        }
+
+        $msg = "{$ruleLabel}: {$verb}";
+        if (!empty($parts)) {
+            $msg .= ' ' . implode(' ', $parts);
+        }
+        if ($err !== '') {
+            $msg .= " – {$err}";
+        }
+
+        mwddns_log($msg, $ok ? LOG_INFO : LOG_ERR);
+    }
 }
 
 /* =========================================================

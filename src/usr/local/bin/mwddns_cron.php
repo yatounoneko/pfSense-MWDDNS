@@ -28,5 +28,5 @@ foreach ($results as $id => $res) {
     $name   = $rules[$id]['name'] ?? "Rule #{$id}";
     $status = $res['ok'] ? 'OK' : 'FAIL';
     $msg    = $res['message'] ?? '';
-    syslog(LOG_INFO, "mwddns [{$name}] {$status}: {$msg}");
+    mwddns_log("[{$name}] {$status}" . ($msg !== '' ? ": {$msg}" : ''));
 }

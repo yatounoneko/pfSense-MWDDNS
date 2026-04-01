@@ -115,11 +115,22 @@ document.addEventListener('DOMContentLoaded', function() {
     if (!panelTitle) {
         return;
     }
-    var titleLink = document.createElement('a');
-    titleLink.href = '/mwddns.php';
-
-    panelTitle.textContent = '';
-    titleLink.textContent = widgetTitle;
-    panelTitle.appendChild(titleLink);
+    // Preserve existing controls; only adjust the visible title text.
+    var existingTextNode = null;
+    for (var i = 0; i < panelTitle.childNodes.length; i++) {
+        var n = panelTitle.childNodes[i];
+        if (n.nodeType === Node.TEXT_NODE && n.textContent.trim() !== '') {
+            existingTextNode = n;
+            break;
+        }
+    }
+    if (existingTextNode) {
+        existingTextNode.textContent = ' ' + widgetTitle + ' ';
+    } else {
+        var titleLink = document.createElement('a');
+        titleLink.href = '/mwddns.php';
+        titleLink.textContent = widgetTitle;
+        panelTitle.insertBefore(titleLink, panelTitle.firstChild);
+    }
 });
 </script>

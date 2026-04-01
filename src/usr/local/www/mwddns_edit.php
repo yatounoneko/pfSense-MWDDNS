@@ -152,21 +152,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'save') {
         mwddns_save_rules($allRules);
 
         $redirectMsg = 'saved';
-        $rulesWithMeta = mwddns_get_rules();
-        $savedRule = $rulesWithMeta[$targetId] ?? null;
-        if ($savedRule !== null) {
-            // Ensure that exceptions during update do not break the redirect flow.
-            $updateResult = ['ok' => false];
-            try {
-                $updateResult = mwddns_update_rule($savedRule);
-            } catch (Exception $e) {
-                error_log('MWDDNS: exception during rule update: ' . $e->getMessage());
-                $updateResult['error'] = 'Unhandled exception during rule update: ' . $e->getMessage();
+            $rulesWithMeta = mwddns_get_rules();
+            $savedRule = $rulesWithMeta[$targetId] ?? null;
+            if ($savedRule !== null) {
+                // Ensure that exceptions during update do not break the redirect flow.
+                $updateResult = ['ok' => false];
+                try {
+                    $updateResult = mwddns_update_rule($savedRule);
+                } catch (Exception $e) {
+                    error_log('MWDDNS: exception during rule update: ' . $e->getMessage());
+                    $updateResult['error'] = 'Unhandled exception during rule update: ' . $e->getMessage();
+                }
+                mwddns_set_rule_metadata($rulesWithMeta, $targetId, $updateResult);
+                mwddns_save_rules($rulesWithMeta);
+                $msg = $updateResult['message'] ?? '';
+                mwddns_log("Manual update for {$savedRule['name']} ({$savedRule['hostname']}) " .
+                    (!empty($updateResult['ok']) ? 'OK' : 'FAIL') . ($msg !== '' ? ": {$msg}" : ''),
+                    !empty($updateResult['ok']) ? LOG_INFO : LOG_ERR);
+                $redirectMsg = $updateResult['ok'] ? 'updated' : 'update_error';
             }
-            mwddns_set_rule_metadata($rulesWithMeta, $targetId, $updateResult);
-            mwddns_save_rules($rulesWithMeta);
-            $redirectMsg = $updateResult['ok'] ? 'updated' : 'update_error';
-        }
 
         header('Location: /mwddns.php?msg=' . $redirectMsg);
         exit;
