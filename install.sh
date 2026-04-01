@@ -26,12 +26,9 @@ WWW_MAIN="/usr/local/www/mwddns.php"
 WWW_EDIT="/usr/local/www/mwddns_edit.php"
 WWW_WIDGET="/usr/local/www/widgets/widgets/mwddns.widget.php"
 CRON_SCRIPT="/usr/local/bin/mwddns_cron.php"
-RC_NEWWAN="/usr/local/etc/rc.newwanip.d/mwddns.sh"
-RC_GW_ALARM="/usr/local/etc/rc.gateway_alarm.d/mwddns.sh"
-RC_LINKUP="/usr/local/etc/rc.linkup.d/mwddns.sh"
 WATCHER_PY="/usr/local/bin/mwddns_gateway_watcher.py"
 WATCHER_RC="/usr/local/etc/rc.d/mwddns_watcher"
-PKG_VERSION="1.0.4"
+PKG_VERSION="1.0.5"
 
 # ---------------------------------------------------------------------------
 # usage: print help text and exit
@@ -94,15 +91,6 @@ install_files() {
     install -m 0755 "${SRC}/usr/local/bin/mwddns_cron.php" "${CRON_SCRIPT}"
     install -m 0755 "${SRC}/usr/local/bin/mwddns_gateway_watcher.py" "${WATCHER_PY}"
 
-    # Hook into interface IP change events
-    mkdir -p /usr/local/etc/rc.newwanip.d
-    install -m 0755 "${SRC}/usr/local/etc/rc.newwanip.d/mwddns.sh" "${RC_NEWWAN}"
-    # Hook into gateway alarm events (dpinger status changes)
-    mkdir -p /usr/local/etc/rc.gateway_alarm.d
-    install -m 0755 "${SRC}/usr/local/etc/rc.gateway_alarm.d/mwddns.sh" "${RC_GW_ALARM}"
-    # Hook into link up/down events (captures IP loss immediately)
-    mkdir -p /usr/local/etc/rc.linkup.d
-    install -m 0755 "${SRC}/usr/local/etc/rc.linkup.d/mwddns.sh" "${RC_LINKUP}"
     # Gateway watcher daemon (polls dpinger and triggers updates)
     mkdir -p /usr/local/etc/rc.d
     install -m 0755 "${SRC}/usr/local/etc/rc.d/mwddns_watcher" "${WATCHER_RC}"
@@ -122,10 +110,8 @@ install_files() {
         \$config = parse_config(true);
         mwddns_install_cron();
         mwddns_enable_watcher();
-        mwddns_install_dhclient_hook();
         echo 'Cron job registered.' . PHP_EOL;
         echo 'Gateway watcher enabled.' . PHP_EOL;
-        echo 'dhclient hook installed.' . PHP_EOL;
     "
 
     # Register/fix package in installedpackages so pfSense menu can render Services entry
@@ -294,10 +280,8 @@ uninstall_files() {
         \$config = parse_config(true);
         mwddns_remove_cron();
         mwddns_disable_watcher();
-        mwddns_remove_dhclient_hook();
         echo 'Cron job removed.' . PHP_EOL;
         echo 'Gateway watcher disabled.' . PHP_EOL;
-        echo 'dhclient hook removed.' . PHP_EOL;
     " 2>/dev/null || true
 
     # Step 2 – purge config if requested and confirmed
@@ -367,7 +351,7 @@ uninstall_files() {
 
     # Step 3 – delete plugin files and provider directory
     rm -f "${PKG_INC}" "${PKG_XML}" "${WWW_MAIN}" "${WWW_EDIT}" \
-          "${WWW_WIDGET}" "${CRON_SCRIPT}" "${RC_NEWWAN}" "${RC_GW_ALARM}" "${RC_LINKUP}" \
+          "${WWW_WIDGET}" "${CRON_SCRIPT}" \
           "${WATCHER_PY}" "${WATCHER_RC}"
     rm -rf /usr/local/pkg/mwddns
 
