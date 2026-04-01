@@ -691,7 +691,7 @@ function mwddns_update_rule(array $rule): array
 
     // Gather current IPs by record type (empty sets are still passed so providers can delete stale records).
     // Use gateway health detection identical to the reference gateway_watcher.py
-    // (https://raw.githubusercontent.com/yatounoneko/pfSense-MWAN-DDNS/refs/heads/main/gateway_watcher.py)
+    // (https://raw.githubusercontent.com/yatounoneko/pfSense-MWAN-DDNS/aef98c18d230fa11db9143ed3b628a49b3432d12/gateway_watcher.py)
     // to exclude unhealthy gateways.
     $ipsByType = mwddns_collect_ips_for_rule($recordTypes, $rule);
 
