@@ -82,7 +82,7 @@ install.sh                          # Manual installation helper
 
 ### Install dependencies
 > If already installed plugins that include Python, such as pfBlockerNG, you can skip the dependency installation step.
-```
+```sh
 # Install Python3.11
 pkg install python311
 
@@ -100,9 +100,37 @@ ssh admin@192.168.0.1
 ```
 
 or custom SSH port
+
 ```cmd
 ssh admin@192.168.0.1 -p 6666
 ```
+
+Then like:
+```
+C:\Users\YOU>ssh admin@192.168.0.1 -p 6666
+(admin@192.168.0.1) Password for admin@pfSense.lan:
+pfSense - Netgate Device ID: abcde...
+
+*** Welcome to pfSense 2.8.1-RELEASE on pfSense ***
+
+ LAN (lan)    -> ix1  -> v4: 192.168.0.1/24
+ Wan1 (wan)   -> igc0 -> v4/DHCP4: 192.168.0.2/24
+ Wan2 (opt1)  -> igc1 -> v4/DHCP4: 192.168.0.3/21
+ Wan3 (opt2)  -> igc2 -> v4/DHCP4: 192.168.0.4/25
+
+ 0) Logout / Disconnect SSH            9) pfTop
+ 1) Assign Interfaces                 10) Filter Logs
+ 2) Set interface(s) IP address       11) Restart GUI
+ 3) Reset admin account and password  12) PHP shell + pfSense tools
+ 4) Reset to factory defaults         13) Update from console
+ 5) Reboot system                     14) Disable Secure Shell (sshd)
+ 6) Halt system                       15) Restore recent configuration
+ 7) Ping host                         16) Restart PHP-FPM
+ 8) Shell
+
+Enter an option: 
+```
+Select item 8 to enter Shell
 
 ```sh
 # Upload your download file on pfSense GUI first. (like: https://192.168.0.1/diag_command.php -> Upload File)
