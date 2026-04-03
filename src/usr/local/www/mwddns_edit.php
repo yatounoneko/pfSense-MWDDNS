@@ -55,10 +55,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'force_up
     }
     if (empty($errors) && $editMode && $rule !== null) {
         $forceResult = mwddns_update_rule($rule);
-        $allRules = mwddns_get_rules();
-        $allRules[$id]['last_updated'] = date('Y-m-d H:i:s');
-        $allRules[$id]['last_status']  = $forceResult['ok'] ? 'OK' : 'Error';
-        mwddns_save_rules($allRules);
+        mwddns_set_rule_metadata_in_file($id, [
+            'last_updated' => date('Y-m-d H:i:s'),
+            'last_status'  => $forceResult['ok'] ? 'OK' : 'Error',
+        ]);
         $rule = mwddns_get_rule($id);
     }
 }
@@ -134,12 +134,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'save') {
             }
         }
 
-        // Preserve last-run metadata when editing
-        if ($editMode && isset($allRules[$id])) {
-            $entry['last_updated'] = $allRules[$id]['last_updated'] ?? '';
-            $entry['last_status']  = $allRules[$id]['last_status']  ?? '';
-        }
-
         // Immediately push an update so new/edited rules take effect without waiting for cron.
         if ($editMode) {
             $allRules[$id] = $entry;
@@ -164,7 +158,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'save') {
                     $updateResult['error'] = 'Unhandled exception during rule update: ' . $e->getMessage();
                 }
                 mwddns_set_rule_metadata($rulesWithMeta, $targetId, $updateResult);
-                mwddns_save_rules($rulesWithMeta);
                 $msg = $updateResult['message'] ?? '';
                 mwddns_log("Manual update for {$savedRule['name']} ({$savedRule['hostname']}) " .
                     (!empty($updateResult['ok']) ? 'OK' : 'FAIL') . ($msg !== '' ? ": {$msg}" : ''),
