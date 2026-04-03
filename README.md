@@ -82,13 +82,16 @@ install.sh                          # Manual installation helper
 
 ### Option A – Manual (SSH into pfSense)
 
-> pfSense 2.8.1 does **not** include `git` by default. Use this upload-based flow.
+> pfSense 2.8.1 You must enable System/Advanced Settings -> Secure Shell
 
-```sh
-# Upload your download file on pfSense GUI first. (like: https://192.168.0.1/diag_command.php -> Upload File)
-unzip /tmp/pfSense-MWDDNS-(version).zip
-cd pfSense-MWDDNS-(version)/
-sh install.sh
+Access via CMD or other terminals(Replace your pfSense IP):
+```cmd
+ssh admin@192.168.0.1
+```
+
+or custom SSH port
+```cmd
+ssh admin@192.168.0.1 -p 6666
 ```
 
 Optional (only SSH manually installed on pfSense):
