@@ -332,6 +332,10 @@ function mwddns_read_dpinger_socket(string $socketPath): string
     if ($contents !== false && $contents !== '') {
         return $contents;
     }
+    // Validate path before falling back to shell: only /var/run/dpinger_*.sock
+    if (!preg_match('#^/var/run/dpinger_[A-Za-z0-9_.~-]+\.sock$#', $socketPath)) {
+        return '';
+    }
     // Fall back to shell cat (compatible with Unix-domain socket nodes on BSD).
     $out = @shell_exec('cat ' . escapeshellarg($socketPath) . ' 2>/dev/null');
     return is_string($out) ? $out : '';
