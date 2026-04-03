@@ -7,7 +7,7 @@
     <!-- ── Identity ─────────────────────────────────────── -->
     <name>mwddns</name>
     <title>Services: Multi-WAN DDNS</title>
-    <version>1.0.0</version>
+    <version>1.0.5</version>
     <description>Multi-WAN Dynamic DNS for multiple providers (Cloudflare, Alibaba Cloud DNS/ESA, PowerDNS) – monitor multiple WAN interfaces and keep A/AAAA records in sync automatically.</description>
 
     <!-- ── Core include ──────────────────────────────────── -->
@@ -75,6 +75,14 @@
         <item>
             <name>/usr/local/bin/mwddns_cron.php</name>
             <url>%%PKGPATH%%mwddns_cron.php</url>
+        </item>
+        <item>
+            <name>/usr/local/bin/mwddns_gateway_watcher.py</name>
+            <url>%%PKGPATH%%mwddns_gateway_watcher.py</url>
+        </item>
+        <item>
+            <name>/usr/local/etc/rc.d/mwddns_watcher</name>
+            <url>%%PKGPATH%%mwddns_watcher</url>
         </item>
     </additional_files_needed>
 

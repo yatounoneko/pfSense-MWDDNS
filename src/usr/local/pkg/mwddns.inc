@@ -24,6 +24,16 @@ define('MWDDNS_CRON_CMD',     '/usr/local/bin/php /usr/local/bin/mwddns_cron.php
 define('MWDDNS_CRON_MINUTE',  '*/5');
 define('MWDDNS_DNS_CACHE_TTL', 60);
 define('MWDDNS_DNS_CACHE_DIR', '/var/run/mwddns');
+define('MWDDNS_WATCHER_RC',   '/usr/local/etc/rc.d/mwddns_watcher');
+define('MWDDNS_WATCHER_RCVAR','mwddns_watcher_enable');
+
+/**
+ * Write a line to syslog with a consistent prefix.
+ */
+function mwddns_log(string $message, int $level = LOG_INFO): void
+{
+    @syslog($level, '[MWDDNS] ' . $message);
+}
 
 /* =========================================================
  * i18n helpers  (GUI only; CLI/install.sh stays English)
@@ -258,6 +268,184 @@ function mwddns_get_interface_ipv6(string $ifname): ?string
 }
 
 /**
+ * Load gateway latency/loss thresholds from config.xml.
+ * Mirrors the logic used by gateway_watcher.py (reference project).
+ */
+function mwddns_get_gateway_thresholds(): array
+{
+    global $config;
+
+    $thresholds = [];
+    $defaults = [
+        'latencyhigh' => (int)($config['gateways']['latencyhigh'] ?? 500),
+        'losshigh'    => (int)($config['gateways']['losshigh'] ?? 20),
+    ];
+
+    if (!empty($config['gateways']['gateway_item']) && is_array($config['gateways']['gateway_item'])) {
+        foreach ($config['gateways']['gateway_item'] as $gw) {
+            $name = $gw['name'] ?? '';
+            if ($name === '') {
+                continue;
+            }
+            $thresholds[$name] = [
+                'latencyhigh' => (int)($gw['latencyhigh'] ?? $defaults['latencyhigh']),
+                'losshigh'    => (int)($gw['losshigh'] ?? $defaults['losshigh']),
+            ];
+        }
+    }
+
+    return $thresholds;
+}
+
+/**
+ * Map gateway name to interface (pfSense logical interface key).
+ */
+function mwddns_gateway_interface_map(): array
+{
+    global $config;
+    $map = [];
+
+    if (!empty($config['gateways']['gateway_item']) && is_array($config['gateways']['gateway_item'])) {
+        foreach ($config['gateways']['gateway_item'] as $gw) {
+            $name = $gw['name'] ?? '';
+            $iface = $gw['interface'] ?? '';
+            if ($name !== '' && $iface !== '') {
+                $map[$name] = $iface;
+            }
+        }
+    }
+
+    return $map;
+}
+
+/**
+ * Read the contents of a dpinger status file.
+ *
+ * dpinger writes its output to /var/run/dpinger_*.sock files.  On some
+ * FreeBSD/pfSense versions these are Unix-domain socket nodes that cannot be
+ * opened with file_get_contents().  Fall back to running `cat` via
+ * shell_exec() when the plain read fails.
+ */
+function mwddns_read_dpinger_socket(string $socketPath): string
+{
+    $contents = @file_get_contents($socketPath);
+    if ($contents !== false && $contents !== '') {
+        return $contents;
+    }
+    // Validate path before falling back to shell: only /var/run/dpinger_*.sock
+    if (!preg_match('#^/var/run/dpinger_[A-Za-z0-9_.~-]+\.sock$#', $socketPath)) {
+        return '';
+    }
+    // Fall back to shell cat (compatible with Unix-domain socket nodes on BSD).
+    $out = @shell_exec('cat ' . escapeshellarg($socketPath) . ' 2>/dev/null');
+    return is_string($out) ? $out : '';
+}
+
+/**
+ * Read dpinger sockets and determine gateway status (online/down) using the
+ * same thresholds/logic as gateway_watcher.py from the reference project.
+ *
+ * Returns an associative array of gateway names whose monitoring data is
+ * available.  Gateways NOT present in the returned array have no dpinger
+ * socket; callers should treat the absence as "monitoring disabled".
+ */
+function mwddns_get_gateway_statuses(array $thresholds): array
+{
+    $statuses = [];
+    foreach (glob('/var/run/dpinger_*.sock') ?: [] as $socketPath) {
+        $basename = basename($socketPath);
+        if (strpos($basename, 'dpinger_') !== 0) {
+            continue;
+        }
+        $parts = explode('~', str_replace('dpinger_', '', $basename), 2);
+        $gatewayName = $parts[0] ?? '';
+        if ($gatewayName === '') {
+            continue;
+        }
+
+        $status   = 'down';
+        $contents = mwddns_read_dpinger_socket($socketPath);
+
+        if ($contents !== '') {
+            // dpinger socket format: "<send_interval_us> <rta_us> <stddev_us> <loss_pct>"
+            $fields = preg_split('/\s+/', trim($contents));
+            if (count($fields) >= 4) {
+                $latencyUs     = (int)$fields[1];
+                $lossPct       = (int)$fields[3];
+                $gwThresholds  = $thresholds[$gatewayName] ?? [];
+                $latencyHighMs = (int)($gwThresholds['latencyhigh'] ?? 500);
+                $lossHighPct   = (int)($gwThresholds['losshigh'] ?? 20);
+                if (($latencyUs / 1000) < $latencyHighMs && $lossPct < $lossHighPct) {
+                    $status = 'online';
+                }
+            }
+        }
+
+        $statuses[$gatewayName] = $status;
+    }
+
+    return $statuses;
+}
+
+/**
+ * Collect IPs by record type for a rule, filtering out interfaces whose
+ * gateways are not healthy per dpinger thresholds (reference watcher logic).
+ */
+function mwddns_collect_ips_for_rule(array $recordTypes, array $rule): array
+{
+    $ipsByType = [];
+    foreach ($recordTypes as $type) {
+        $ipsByType[$type] = [];
+    }
+
+    $thresholds = mwddns_get_gateway_thresholds();
+    $gatewayStatuses = mwddns_get_gateway_statuses($thresholds);
+    $gatewayToIf = mwddns_gateway_interface_map();
+    $ifToGateway = [];
+    foreach ($gatewayToIf as $gwName => $iface) {
+        if (!isset($ifToGateway[$iface])) {
+            $ifToGateway[$iface] = $gwName;
+        }
+    }
+
+    foreach (mwddns_rule_interfaces($rule) as $ifname) {
+        $gwName = $ifToGateway[$ifname] ?? '';
+
+        if ($gwName === '') {
+            // No gateway is configured for this interface.  Skip it to avoid
+            // propagating IPs whose reachability is entirely unknown.
+            continue;
+        }
+
+        if (isset($gatewayStatuses[$gwName])) {
+            // dpinger monitoring data is available: only include IPs from
+            // gateways that are currently healthy (online).
+            if ($gatewayStatuses[$gwName] !== 'online') {
+                continue; // gateway is down / high-latency / packet-loss
+            }
+        }
+        // If $gatewayStatuses does not contain $gwName, dpinger monitoring is
+        // disabled or the socket has not been created yet.  Treat the interface
+        // as reachable so its IP is still published to DNS.
+
+        if (isset($ipsByType['A'])) {
+            $ip4 = mwddns_get_interface_ip($ifname);
+            if ($ip4 !== null) {
+                $ipsByType['A'][$ip4] = true;
+            }
+        }
+        if (isset($ipsByType['AAAA'])) {
+            $ip6 = mwddns_get_interface_ipv6($ifname);
+            if ($ip6 !== null) {
+                $ipsByType['AAAA'][$ip6] = true;
+            }
+        }
+    }
+
+    return $ipsByType;
+}
+
+/**
  * Return the human-readable description of an interface key.
  */
 function mwddns_get_interface_desc(string $ifname): string
@@ -265,6 +453,28 @@ function mwddns_get_interface_desc(string $ifname): string
     global $config;
     $descr = $config['interfaces'][$ifname]['descr'] ?? '';
     return $descr !== '' ? $descr : strtoupper($ifname);
+}
+
+/**
+ * Normalize an interface identifier to the friendly pfSense key (wan/opt1/...).
+ * Falls back to the original string when no mapping exists.
+ */
+function mwddns_normalize_ifname(?string $ifname): ?string
+{
+    if ($ifname === null) {
+        return null;
+    }
+    $trimmed = trim($ifname);
+    if ($trimmed === '') {
+        return null;
+    }
+    if (function_exists('convert_real_interface_to_friendly_interface_name')) {
+        $friendly = convert_real_interface_to_friendly_interface_name($trimmed);
+        if (!empty($friendly)) {
+            return $friendly;
+        }
+    }
+    return $trimmed;
 }
 
 /**
@@ -469,6 +679,19 @@ function mwddns_dns_lookup_uncached(string $hostname, string $type, int $ipFilte
  * ========================================================= */
 
 /**
+ * Persist last-run metadata into a rules array in-place.
+ */
+function mwddns_set_rule_metadata(array &$rules, int $id, array $result, ?int $timestamp = null): void
+{
+    if (!isset($rules[$id])) {
+        return;
+    }
+    $ts = $timestamp ?? time();
+    $rules[$id]['last_updated'] = date('Y-m-d H:i:s', $ts);
+    $rules[$id]['last_status']  = !empty($result['ok']) ? 'OK' : 'Error';
+}
+
+/**
  * Synchronise DNS records for one rule by dispatching to its provider.
  *
  * Algorithm:
@@ -480,7 +703,9 @@ function mwddns_dns_lookup_uncached(string $hostname, string $type, int $ipFilte
  *
  * $ipsByType shape passed to providers:
  *   ['A' => ['1.2.3.4' => true, …], 'AAAA' => ['2001:db8::1' => true, …]]
- * Only types that are configured AND have at least one available IP are included.
+ * All configured record types are included, even when no IP is currently
+ * available on monitored interfaces (to allow providers to delete stale
+ * records).
  *
  * Returns: ['ok' => bool, 'message' => string, 'actions' => [...]]
  */
@@ -488,6 +713,7 @@ function mwddns_update_rule(array $rule): array
 {
     $provider = $rule['provider'] ?? 'cloudflare';  // backward-compat default
     $host     = $rule['hostname'] ?? '';
+    $ruleLabel = $rule['name'] ?? $host;
 
     if ($host === '') {
         return ['ok' => false, 'message' => 'Rule is missing hostname.', 'actions' => []];
@@ -503,58 +729,120 @@ function mwddns_update_rule(array $rule): array
     }
 
     $recordTypes = mwddns_rule_record_types($rule);
-
-    // Gather current IPs by record type
-    $ipsByType = [];
-    foreach (mwddns_rule_interfaces($rule) as $ifname) {
-        if (in_array('A', $recordTypes, true)) {
-            $ip4 = mwddns_get_interface_ip($ifname);
-            if ($ip4 !== null) {
-                $ipsByType['A'][$ip4] = true;
-            }
-        }
-        if (in_array('AAAA', $recordTypes, true)) {
-            $ip6 = mwddns_get_interface_ipv6($ifname);
-            if ($ip6 !== null) {
-                $ipsByType['AAAA'][$ip6] = true;
-            }
-        }
+    if (empty($recordTypes)) {
+        $label = $ruleLabel !== '' ? $ruleLabel : 'unknown rule';
+        return ['ok' => false, 'message' => "Rule has no record types configured ({$label}).", 'actions' => []];
     }
 
-    if (empty($ipsByType)) {
-        return ['ok' => false, 'message' => 'No valid IPs found on monitored interfaces for the configured record types.', 'actions' => []];
-    }
+    // Gather current IPs by record type (empty sets are still passed so providers can delete stale records).
+    // Use gateway health detection identical to the reference gateway_watcher.py
+    // (https://raw.githubusercontent.com/yatounoneko/pfSense-MWAN-DDNS/aef98c18d230fa11db9143ed3b628a49b3432d12/gateway_watcher.py)
+    // to exclude unhealthy gateways.
+    $ipsByType = mwddns_collect_ips_for_rule($recordTypes, $rule);
 
-    return $fn($ipsByType, $rule);
+    mwddns_log("Updating {$ruleLabel} ({$host}) via {$provider}");
+    $result = $fn($ipsByType, $rule);
+    if (!empty($result['actions']) && is_array($result['actions'])) {
+        mwddns_log_actions($result['actions'], $ruleLabel, $host);
+    }
+    $message = $result['message'] ?? '';
+    mwddns_log("Update {$ruleLabel} ({$host}) " . (!empty($result['ok']) ? 'OK' : 'FAIL') . ($message !== '' ? ": {$message}" : ''),
+        !empty($result['ok']) ? LOG_INFO : LOG_ERR);
+    return $result;
 }
 
 /**
- * Update all rules and persist timestamps/status into config.
+ * Update all rules (or only those monitoring a specific interface) and persist
+ * timestamps/status into config.
  */
-function mwddns_update_all(): array
+function mwddns_update_all(?string $onlyInterface = null): array
 {
-    $rules   = mwddns_get_rules();
-    $results = [];
+    $rules         = mwddns_get_rules();
+    $results       = [];
+    $normalizedInterface = mwddns_normalize_ifname($onlyInterface);
+    $persistNeeded = false;
 
     foreach ($rules as $id => $rule) {
+        if ($normalizedInterface !== null) {
+            $ruleInterfaces = mwddns_rule_interfaces($rule);
+            if (!in_array($normalizedInterface, $ruleInterfaces, true)) {
+                continue;
+            }
+        }
+
         $res = mwddns_update_rule($rule);
         $results[$id] = $res;
 
         // Store last-run metadata in the normalized rules array
-        $rules[$id]['last_updated'] = date('Y-m-d H:i:s');
-        $rules[$id]['last_status']  = $res['ok'] ? 'OK' : 'Error';
+        mwddns_set_rule_metadata($rules, $id, $res);
+        $persistNeeded = true;
     }
 
-    if (!empty($rules)) {
+    if ($persistNeeded) {
         mwddns_save_rules($rules);
     }
 
     return $results;
 }
 
+/**
+ * Emit syslog lines for each provider action.
+ */
+function mwddns_log_actions(array $actions, string $ruleLabel, string $hostname = ''): void
+{
+    foreach ($actions as $action) {
+        $verb = $action['action'] ?? 'action';
+        $ip   = $action['ip'] ?? '';
+        $type = $action['type'] ?? '';
+        $ok   = !empty($action['ok']);
+        $err  = trim($action['error'] ?? '');
+
+        $parts = [];
+        if ($type !== '') {
+            $parts[] = $type;
+        }
+        if ($ip !== '') {
+            $parts[] = $ip;
+        }
+        if ($hostname !== '') {
+            $parts[] = "for {$hostname}";
+        }
+
+        $msg = "{$ruleLabel}: {$verb}";
+        if (!empty($parts)) {
+            $msg .= ' ' . implode(' ', $parts);
+        }
+        if ($err !== '') {
+            $msg .= " – {$err}";
+        }
+
+        mwddns_log($msg, $ok ? LOG_INFO : LOG_ERR);
+    }
+}
+
 /* =========================================================
  * Cron / package lifecycle
  * ========================================================= */
+
+/**
+ * Validate the watcher rcvar name to avoid shell injection.
+ */
+function mwddns_valid_watcher_rcvar(): bool
+{
+    return preg_match('/^[A-Za-z0-9_]+$/', MWDDNS_WATCHER_RCVAR) === 1;
+}
+
+/**
+ * Set the watcher rcvar to a given value (YES/NO).
+ */
+function mwddns_set_watcher_rcvar(string $value): void
+{
+    if (!mwddns_valid_watcher_rcvar()) {
+        return;
+    }
+    $rcvarCmd = '/usr/sbin/sysrc -q ' . escapeshellarg(MWDDNS_WATCHER_RCVAR) . '=' . escapeshellarg($value);
+    @mwexec($rcvarCmd);
+}
 
 /**
  * Install (or refresh) the periodic cron job.
@@ -572,14 +860,43 @@ function mwddns_remove_cron(): void
     install_cron_job(MWDDNS_CRON_CMD, false);
 }
 
+/**
+ * Enable and restart the gateway watcher service if present.
+ */
+function mwddns_enable_watcher(): void
+{
+    if (!file_exists(MWDDNS_WATCHER_RC)) {
+        return;
+    }
+    // Ensure rcvar exists and is enabled; quiet errors if sysrc is absent
+    $rcdCmd   = MWDDNS_WATCHER_RC . ' restart';
+    mwddns_set_watcher_rcvar('YES');
+    @mwexec($rcdCmd);
+}
+
+/**
+ * Stop and disable the gateway watcher service if present.
+ */
+function mwddns_disable_watcher(): void
+{
+    if (!file_exists(MWDDNS_WATCHER_RC)) {
+        return;
+    }
+    $rcdCmd   = MWDDNS_WATCHER_RC . ' stop';
+    @mwexec($rcdCmd);
+    mwddns_set_watcher_rcvar('NO');
+}
+
 /** Called by the pfSense package manager after installation. */
 function mwddns_install(): void
 {
     mwddns_install_cron();
+    mwddns_enable_watcher();
 }
 
 /** Called by the pfSense package manager before removal. */
 function mwddns_deinstall(): void
 {
     mwddns_remove_cron();
+    mwddns_disable_watcher();
 }

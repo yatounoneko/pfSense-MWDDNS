@@ -17,6 +17,7 @@ require_once('/usr/local/pkg/mwddns.inc');
 
 $rules = mwddns_get_rules();
 ?>
+<div id="mwddns-widget-body">
 <table class="table table-striped table-hover table-condensed">
     <thead>
         <tr>
@@ -97,3 +98,39 @@ $rules = mwddns_get_rules();
         <i class="fa fa-cog"></i> <?= mwddns_t('Manage Rules') ?>
     </a>
 </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var widgetBody = document.getElementById('mwddns-widget-body');
+    if (!widgetBody) {
+        return;
+    }
+    var widgetTitle = 'Multi-WAN DDNS';
+    var panelContainer = widgetBody.closest('.panel');
+    if (!panelContainer) {
+        return;
+    }
+    var panelTitle = panelContainer.querySelector('.panel-title');
+    if (!panelTitle) {
+        return;
+    }
+    // Preserve existing controls; only adjust the visible title text.
+    var existingTextNode = null;
+    for (var i = 0; i < panelTitle.childNodes.length; i++) {
+        var n = panelTitle.childNodes[i];
+        if (n.nodeType === Node.TEXT_NODE && n.textContent.trim() !== '') {
+            existingTextNode = n;
+            break;
+        }
+    }
+    if (existingTextNode) {
+        existingTextNode.textContent = ' ' + widgetTitle + ' ';
+    } else {
+        var titleLink = document.createElement('a');
+        titleLink.href = '/mwddns.php';
+        titleLink.textContent = widgetTitle;
+        panelTitle.insertBefore(titleLink, panelTitle.firstChild);
+    }
+});
+</script>

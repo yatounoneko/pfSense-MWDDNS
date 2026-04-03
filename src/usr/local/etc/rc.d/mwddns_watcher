@@ -1,0 +1,20 @@
+#!/bin/sh
+#
+# PROVIDE: mwddns_watcher
+# REQUIRE: NETWORKING dpinger
+# KEYWORD: nojail
+
+. /etc/rc.subr
+
+name="mwddns_watcher"
+rcvar="${name}_enable"
+pidfile="/var/run/${name}.pid"
+command="/usr/sbin/daemon"
+python_bin="/usr/local/bin/python3.11"
+watcher_script="/usr/local/bin/mwddns_gateway_watcher.py"
+command_args="-f -p ${pidfile} ${python_bin} ${watcher_script}"
+
+load_rc_config "${name}"
+: ${mwddns_watcher_enable:="YES"}
+
+run_rc_command "$1"

@@ -88,6 +88,11 @@ function mwddns_cloudflare_update(array $ipsByType, array $rule): array
         return ['ok' => false, 'message' => 'Cloudflare token or zone_id is missing.', 'actions' => []];
     }
 
+    // Cloudflare requires TTL=1 (Auto) for proxied records; any other value is rejected.
+    if ($proxied) {
+        $ttl = 1;
+    }
+
     $actions  = [];
     $anyError = false;
 
