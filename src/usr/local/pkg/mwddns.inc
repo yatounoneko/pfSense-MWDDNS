@@ -319,8 +319,31 @@ function mwddns_gateway_interface_map(): array
 }
 
 /**
+ * Read the contents of a dpinger status file.
+ *
+ * dpinger writes its output to /var/run/dpinger_*.sock files.  On some
+ * FreeBSD/pfSense versions these are Unix-domain socket nodes that cannot be
+ * opened with file_get_contents().  Fall back to running `cat` via
+ * shell_exec() when the plain read fails.
+ */
+function mwddns_read_dpinger_socket(string $socketPath): string
+{
+    $contents = @file_get_contents($socketPath);
+    if ($contents !== false && $contents !== '') {
+        return $contents;
+    }
+    // Fall back to shell cat (compatible with Unix-domain socket nodes on BSD).
+    $out = @shell_exec('cat ' . escapeshellarg($socketPath) . ' 2>/dev/null');
+    return is_string($out) ? $out : '';
+}
+
+/**
  * Read dpinger sockets and determine gateway status (online/down) using the
  * same thresholds/logic as gateway_watcher.py from the reference project.
+ *
+ * Returns an associative array of gateway names whose monitoring data is
+ * available.  Gateways NOT present in the returned array have no dpinger
+ * socket; callers should treat the absence as "monitoring disabled".
  */
 function mwddns_get_gateway_statuses(array $thresholds): array
 {
@@ -336,23 +359,21 @@ function mwddns_get_gateway_statuses(array $thresholds): array
             continue;
         }
 
-        $status = 'down';
-        $contents = file_get_contents($socketPath);
-        if ($contents === false) {
-            $statuses[$gatewayName] = $status;
-            continue;
-        }
+        $status   = 'down';
+        $contents = mwddns_read_dpinger_socket($socketPath);
 
-        // dpinger socket format: "<timestamp> <latency_us> <loss_avg> <loss_pct> ..."
-        $fields = preg_split('/\s+/', trim($contents));
-        if (count($fields) >= 4) {
-            $latencyUs = (int)$fields[1];
-            $lossPct   = (int)$fields[3];
-            $gwThresholds = $thresholds[$gatewayName] ?? [];
-            $latencyHighMs = (int)($gwThresholds['latencyhigh'] ?? 500);
-            $lossHighPct   = (int)($gwThresholds['losshigh'] ?? 20);
-            if (($latencyUs / 1000) < $latencyHighMs && $lossPct < $lossHighPct) {
-                $status = 'online';
+        if ($contents !== '') {
+            // dpinger socket format: "<send_interval_us> <rta_us> <stddev_us> <loss_pct>"
+            $fields = preg_split('/\s+/', trim($contents));
+            if (count($fields) >= 4) {
+                $latencyUs     = (int)$fields[1];
+                $lossPct       = (int)$fields[3];
+                $gwThresholds  = $thresholds[$gatewayName] ?? [];
+                $latencyHighMs = (int)($gwThresholds['latencyhigh'] ?? 500);
+                $lossHighPct   = (int)($gwThresholds['losshigh'] ?? 20);
+                if (($latencyUs / 1000) < $latencyHighMs && $lossPct < $lossHighPct) {
+                    $status = 'online';
+                }
             }
         }
 
@@ -385,11 +406,23 @@ function mwddns_collect_ips_for_rule(array $recordTypes, array $rule): array
 
     foreach (mwddns_rule_interfaces($rule) as $ifname) {
         $gwName = $ifToGateway[$ifname] ?? '';
-        // Treat interfaces without a mapped gateway as down to avoid propagating unknown/invalid IPs.
-        $gwStatus = $gwName !== '' ? ($gatewayStatuses[$gwName] ?? 'down') : 'down';
-        if ($gwStatus !== 'online') {
-            continue; // skip interfaces whose gateway is unhealthy
+
+        if ($gwName === '') {
+            // No gateway is configured for this interface.  Skip it to avoid
+            // propagating IPs whose reachability is entirely unknown.
+            continue;
         }
+
+        if (isset($gatewayStatuses[$gwName])) {
+            // dpinger monitoring data is available: only include IPs from
+            // gateways that are currently healthy (online).
+            if ($gatewayStatuses[$gwName] !== 'online') {
+                continue; // gateway is down / high-latency / packet-loss
+            }
+        }
+        // If $gatewayStatuses does not contain $gwName, dpinger monitoring is
+        // disabled or the socket has not been created yet.  Treat the interface
+        // as reachable so its IP is still published to DNS.
 
         if (isset($ipsByType['A'])) {
             $ip4 = mwddns_get_interface_ip($ifname);

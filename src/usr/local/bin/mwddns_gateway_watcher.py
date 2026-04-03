@@ -119,7 +119,15 @@ class GatewayWatcher:
             time.sleep(self.poll_interval)
             thresholds = self.platform.get_gateway_monitoring_thresholds()
             current_statuses = self.platform.get_gateway_statuses(thresholds)
-            if current_statuses and current_statuses != self.previous_statuses:
+
+            # Trigger if:
+            # 1. We have data and something changed (includes online→down transitions), OR
+            # 2. A gateway that was previously tracked has disappeared from the
+            #    current snapshot (e.g., dpinger restarted or socket was removed
+            #    while the interface went offline).
+            disappeared = self.previous_statuses and not current_statuses.keys() >= self.previous_statuses.keys()
+            changed = bool(current_statuses) and current_statuses != self.previous_statuses
+            if changed or disappeared:
                 print(f"[{time.ctime()}] Status change detected!")
                 print(f"    Old status: {self.previous_statuses}")
                 print(f"    New status: {current_statuses}")
