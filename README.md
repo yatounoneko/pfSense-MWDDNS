@@ -82,7 +82,17 @@ install.sh                          # Manual installation helper
 
 ### Option A – Manual (SSH into pfSense)
 
-> pfSense 2.8.1 does **not** include `git` by default. Use this upload-based flow.
+> pfSense 2.8.1 You must enable System/Advanced Settings -> Secure Shell
+
+Access via CMD or other terminals(Replace your pfSense IP):
+```cmd
+ssh admin@192.168.0.1
+```
+
+or custom SSH port
+```cmd
+ssh admin@192.168.0.1 -p 6666
+```
 
 ```sh
 # Upload your download file on pfSense GUI first. (like: https://192.168.0.1/diag_command.php -> Upload File)
@@ -255,3 +265,17 @@ each type (A for IPv4, AAAA for IPv6) independently.
      - The provider must loop over `$ipsByType` and handle each type independently.
 3. Register the provider in `mwddns_get_providers()` inside `mwddns.inc`.
 4. Add the new file to `install.sh` and `mwddns.xml`.
+
+---
+
+## License
+
+This project is licensed under the **Apache License 2.0** – see the [LICENSE](LICENSE) file for details.
+
+### Attribution
+
+The gateway watcher module (`mwddns_gateway_watcher.py`) is adapted from
+**[psych0d0g/pfSense-MWAN-DDNS](https://github.com/psych0d0g/pfSense-MWAN-DDNS)**
+(Apache License 2.0).
+
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for complete third-party attribution.
