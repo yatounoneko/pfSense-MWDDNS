@@ -94,6 +94,13 @@ or custom SSH port
 ssh admin@192.168.0.1 -p 6666
 ```
 
+```sh
+# Upload your download file on pfSense GUI first. (like: https://192.168.0.1/diag_command.php -> Upload File)
+unzip /tmp/pfSense-MWDDNS-(version).zip
+cd pfSense-MWDDNS-(version)/
+sh install.sh
+```
+
 Optional (only SSH manually installed on pfSense):
 
 ```sh
