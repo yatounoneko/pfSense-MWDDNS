@@ -255,3 +255,17 @@ each type (A for IPv4, AAAA for IPv6) independently.
      - The provider must loop over `$ipsByType` and handle each type independently.
 3. Register the provider in `mwddns_get_providers()` inside `mwddns.inc`.
 4. Add the new file to `install.sh` and `mwddns.xml`.
+
+---
+
+## License
+
+This project is licensed under the **Apache License 2.0** – see the [LICENSE](LICENSE) file for details.
+
+### Attribution
+
+The gateway watcher module (`mwddns_gateway_watcher.py`) is adapted from
+**[psych0d0g/pfSense-MWAN-DDNS](https://github.com/psych0d0g/pfSense-MWAN-DDNS)**
+(Apache License 2.0).
+
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for complete third-party attribution.
