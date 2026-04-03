@@ -15,13 +15,14 @@
 The gateway watcher module (`mwddns_gateway_watcher.py`) is adapted from the
 `gateway_watcher.py` module in the upstream project. Significant changes include:
 
-- Refactored into an abstract `BasePlatform` / `PfSensePlatform` class hierarchy
-  to support testing and future portability
-- Replaced direct file I/O with a `DpingerReader` abstraction over dpinger sockets
+- Adapted for this project's MWDDNS gateway-monitoring workflow
+- Uses the current watcher implementation to read dpinger status data and detect
+  gateway state changes
 - Integrated with the MWDDNS update pipeline (`mwddns_cron.php`) instead of the
   upstream PowerDNS-specific update flow
 - Extended exception handling, structured logging, and command-line argument support
-- All PHP-based hook scripts replaced by this standalone Python daemon
+- Reworked the upstream hook/update flow so the Python watcher drives updates while
+  still invoking the PHP-based MWDDNS updater
 
 ### License Terms
 
