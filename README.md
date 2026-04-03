@@ -1,7 +1,7 @@
 # pfSense-MWDDNS
 pfSense Multi-WAN DDNS Plugin
 
-A pfSense package (PHP, no extra dependencies) that monitors **multiple WAN
+A pfSense package (PHP & Python, no extra dependencies) that monitors **multiple WAN
 interfaces** and keeps DNS A/AAAA records in sync automatically across multiple DNS providers.
 
 The purpose of this plugin is to solve the problem that the native DDNS plugin cannot add multiple A/AAAA records to a single hostname at the same time.
