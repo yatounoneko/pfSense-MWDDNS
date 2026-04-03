@@ -379,7 +379,7 @@ confirm_purge() {
     printf '  This action will PERMANENTLY DELETE all MWDDNS settings from\n'
     printf '  pfSense config.xml and CANNOT be undone.\n'
     printf '\n'
-    printf '  此動作將永久刪除 MWDDNS 設定，是否繼續？ [y/N] '
+    printf '  This action will permanently delete the MWDDNS configuration. Do you want to continue? [y/N] '
     read -r _answer
 
     case "${_answer}" in
