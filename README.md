@@ -1,7 +1,7 @@
 # pfSense-MWDDNS
 pfSense Multi-WAN DDNS Plugin
 
-A pfSense package (PHP & Python, no extra dependencies) that monitors **multiple WAN
+A pfSense package that monitors **multiple WAN
 interfaces** and keeps DNS A/AAAA records in sync automatically across multiple DNS providers.
 
 The purpose of this plugin is to solve the problem that the native DDNS plugin cannot add multiple A/AAAA records to a single hostname at the same time.
@@ -68,8 +68,8 @@ install.sh                          # Manual installation helper
 
 ## Requirements
 
-* pfSense CE 2.7.x / 2.8.x (FreeBSD 14, PHP 8.x)
-* Python 3.11 (bundled with pfSense 2.7/2.8; used by the gateway watcher service)
+* pfSense CE 2.7.x / 2.8.x
+* Python 3.11
 * Credentials/API access for **at least one supported DNS provider**:
   * Cloudflare: API Token + Zone ID
   * Alibaba Cloud DNS (intl/CN): AccessKey ID + AccessKey Secret + Root Domain
@@ -79,6 +79,16 @@ install.sh                          # Manual installation helper
 ---
 
 ## Installation
+
+### Install dependencies
+> If already installed plugins that include Python, such as pfBlockerNG, you can skip the dependency installation step.
+```
+# Install Python3.11
+pkg install python311
+
+# Verify installation
+python3.11 --version
+```
 
 ### Option A – Manual (SSH into pfSense)
 
