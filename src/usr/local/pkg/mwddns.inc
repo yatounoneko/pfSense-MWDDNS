@@ -24,6 +24,7 @@ define('MWDDNS_CRON_CMD',     '/usr/local/bin/php /usr/local/bin/mwddns_cron.php
 define('MWDDNS_CRON_MINUTE',  '*/5');
 define('MWDDNS_DNS_CACHE_TTL', 60);
 define('MWDDNS_DNS_CACHE_DIR', '/var/run/mwddns');
+define('MWDDNS_METADATA_FILE', MWDDNS_DNS_CACHE_DIR . '/metadata.json');
 define('MWDDNS_WATCHER_RC',   '/usr/local/etc/rc.d/mwddns_watcher');
 define('MWDDNS_WATCHER_RCVAR','mwddns_watcher_enable');
 
@@ -197,6 +198,10 @@ function mwddns_provider_name(string $key): string
  *
  * pfSense's XML→PHP parser collapses a single-item list into an
  * associative array, so we normalise that case here.
+ *
+ * Metadata (last_updated, last_status) is merged in from the state file so
+ * that callers (UI, widget) always see up-to-date status without requiring
+ * those fields to live in config.xml.
  */
 function mwddns_get_rules(): array
 {
@@ -209,7 +214,19 @@ function mwddns_get_rules(): array
     if (isset($rules['name'])) {
         $rules = [$rules];
     }
-    return array_values($rules);
+    $rules = array_values($rules);
+
+    // Overlay metadata from the state file (does not touch config.xml)
+    $metadata = mwddns_get_metadata();
+    foreach ($rules as $id => &$rule) {
+        if (isset($metadata[$id])) {
+            $rule['last_updated'] = $metadata[$id]['last_updated'] ?? ($rule['last_updated'] ?? '');
+            $rule['last_status']  = $metadata[$id]['last_status']  ?? ($rule['last_status']  ?? '');
+        }
+    }
+    unset($rule);
+
+    return $rules;
 }
 
 /**
@@ -223,12 +240,48 @@ function mwddns_get_rule(int $id): ?array
 
 /**
  * Persist the full rules array back into pfSense config.xml.
+ *
+ * Volatile metadata (last_updated, last_status) is stripped before writing
+ * so that routine cron status updates never touch config.xml.  The function
+ * is a no-op when the stripped rule definitions are identical to what is
+ * already stored, preventing spurious write_config() calls that would
+ * otherwise trigger the Auto Configuration Backup plugin every 5 minutes.
+ *
+ * When the rule definitions do change (add / edit / delete via UI), the
+ * metadata state file is cleared so stale index-keyed entries cannot be
+ * associated with the wrong rule after a reindex.
  */
 function mwddns_save_rules(array $rules): void
 {
     global $config;
-    $config[MWDDNS_CONFIG_KEY]['rule'] = array_values($rules);
+
+    // Helper: strip volatile metadata fields from a single rule entry.
+    $stripMeta = static function (array $rule): array {
+        unset($rule['last_updated'], $rule['last_status']);
+        return $rule;
+    };
+
+    $configRules = array_values(array_map($stripMeta, $rules));
+
+    // Normalize the existing stored rules for comparison.
+    $existing = $config[MWDDNS_CONFIG_KEY]['rule'] ?? [];
+    if (isset($existing['name'])) {
+        $existing = [$existing];
+    }
+    $existingNorm = array_values(array_map($stripMeta, $existing));
+
+    // Only call write_config() when rule definitions actually changed.
+    if ($configRules === $existingNorm) {
+        return;
+    }
+
+    $config[MWDDNS_CONFIG_KEY]['rule'] = $configRules;
     write_config('MWDDNS: rules saved');
+
+    // Clear the metadata state file; stale index-keyed entries would map to
+    // the wrong rules after a reindex caused by deletion or insertion.
+    // The cron job will repopulate the file within the next 5 minutes.
+    mwddns_save_metadata([]);
 }
 
 /**
@@ -241,6 +294,84 @@ function mwddns_delete_rule(int $id): void
         array_splice($rules, $id, 1);
         mwddns_save_rules($rules);
     }
+}
+
+/* =========================================================
+ * Metadata state file helpers
+ *
+ * last_updated and last_status are volatile per-run values that change every
+ * 5 minutes.  Storing them in /var/run/mwddns/metadata.json keeps them out
+ * of config.xml, preventing the Auto Configuration Backup plugin from
+ * triggering a backup on every cron tick.
+ * ========================================================= */
+
+/**
+ * Read the full metadata map from the state file.
+ * Returns an array keyed by rule index, each entry having
+ * 'last_updated' and 'last_status'.  Returns [] when no file exists.
+ */
+function mwddns_get_metadata(): array
+{
+    if (!file_exists(MWDDNS_METADATA_FILE)) {
+        return [];
+    }
+    $raw = file_get_contents(MWDDNS_METADATA_FILE);
+    if ($raw === false) {
+        mwddns_log('Failed to read metadata file: ' . MWDDNS_METADATA_FILE, LOG_WARNING);
+        return [];
+    }
+    if ($raw === '') {
+        return [];
+    }
+    $data = json_decode($raw, true);
+    if (!is_array($data)) {
+        mwddns_log('Metadata file contains invalid JSON, ignoring: ' . MWDDNS_METADATA_FILE, LOG_WARNING);
+        return [];
+    }
+    return $data;
+}
+
+/**
+ * Write the full metadata map to the state file.
+ * The directory is created automatically when missing.
+ */
+function mwddns_save_metadata(array $metadata): void
+{
+    if (!is_dir(MWDDNS_DNS_CACHE_DIR)) {
+        if (!mkdir(MWDDNS_DNS_CACHE_DIR, 0700, true) && !is_dir(MWDDNS_DNS_CACHE_DIR)) {
+            mwddns_log('Failed to create metadata directory: ' . MWDDNS_DNS_CACHE_DIR, LOG_WARNING);
+            return;
+        }
+        chmod(MWDDNS_DNS_CACHE_DIR, 0700);
+    }
+    $written = file_put_contents(
+        MWDDNS_METADATA_FILE,
+        json_encode($metadata, JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT),
+        LOCK_EX
+    );
+    if ($written === false) {
+        mwddns_log('Failed to write metadata file: ' . MWDDNS_METADATA_FILE, LOG_WARNING);
+    }
+}
+
+/**
+ * Return the metadata entry for a single rule by its array index.
+ * Returns [] when no entry exists.
+ */
+function mwddns_get_rule_metadata(int $id): array
+{
+    $metadata = mwddns_get_metadata();
+    return $metadata[$id] ?? [];
+}
+
+/**
+ * Merge $data into the metadata entry for rule $id and persist the file.
+ */
+function mwddns_set_rule_metadata_in_file(int $id, array $data): void
+{
+    $metadata        = mwddns_get_metadata();
+    $metadata[$id]   = array_merge($metadata[$id] ?? [], $data);
+    mwddns_save_metadata($metadata);
 }
 
 /* =========================================================
@@ -679,16 +810,28 @@ function mwddns_dns_lookup_uncached(string $hostname, string $type, int $ipFilte
  * ========================================================= */
 
 /**
- * Persist last-run metadata into a rules array in-place.
+ * Persist last-run metadata for a rule into the state file.
+ *
+ * Also updates the in-memory $rules array so callers that use the array
+ * immediately after (e.g. mwddns_edit.php) see the new values without
+ * having to re-read from disk.
  */
 function mwddns_set_rule_metadata(array &$rules, int $id, array $result, ?int $timestamp = null): void
 {
-    if (!isset($rules[$id])) {
-        return;
+    $ts   = $timestamp ?? time();
+    $meta = [
+        'last_updated' => date('Y-m-d H:i:s', $ts),
+        'last_status'  => !empty($result['ok']) ? 'OK' : 'Error',
+    ];
+
+    // Persist to state file (does not touch config.xml)
+    mwddns_set_rule_metadata_in_file($id, $meta);
+
+    // Keep in-memory array in sync for callers that use it immediately
+    if (isset($rules[$id])) {
+        $rules[$id]['last_updated'] = $meta['last_updated'];
+        $rules[$id]['last_status']  = $meta['last_status'];
     }
-    $ts = $timestamp ?? time();
-    $rules[$id]['last_updated'] = date('Y-m-d H:i:s', $ts);
-    $rules[$id]['last_status']  = !empty($result['ok']) ? 'OK' : 'Error';
 }
 
 /**
@@ -753,14 +896,17 @@ function mwddns_update_rule(array $rule): array
 
 /**
  * Update all rules (or only those monitoring a specific interface) and persist
- * timestamps/status into config.
+ * timestamps/status into the metadata state file.
+ *
+ * config.xml is NOT modified here; metadata is written to
+ * /var/run/mwddns/metadata.json so that the Auto Configuration Backup plugin
+ * is not triggered on every cron tick.
  */
 function mwddns_update_all(?string $onlyInterface = null): array
 {
-    $rules         = mwddns_get_rules();
-    $results       = [];
+    $rules               = mwddns_get_rules();
+    $results             = [];
     $normalizedInterface = mwddns_normalize_ifname($onlyInterface);
-    $persistNeeded = false;
 
     foreach ($rules as $id => $rule) {
         if ($normalizedInterface !== null) {
@@ -770,16 +916,11 @@ function mwddns_update_all(?string $onlyInterface = null): array
             }
         }
 
-        $res = mwddns_update_rule($rule);
+        $res          = mwddns_update_rule($rule);
         $results[$id] = $res;
 
-        // Store last-run metadata in the normalized rules array
+        // Persist metadata to state file only (not config.xml)
         mwddns_set_rule_metadata($rules, $id, $res);
-        $persistNeeded = true;
-    }
-
-    if ($persistNeeded) {
-        mwddns_save_rules($rules);
     }
 
     return $results;

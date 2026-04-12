@@ -29,6 +29,7 @@ CRON_SCRIPT="/usr/local/bin/mwddns_cron.php"
 WATCHER_PY="/usr/local/bin/mwddns_gateway_watcher.py"
 WATCHER_RC="/usr/local/etc/rc.d/mwddns_watcher"
 PKG_VERSION="1.0.5"
+MWDDNS_METADATA_DIR="/var/run/mwddns"
 
 # ---------------------------------------------------------------------------
 # usage: print help text and exit
@@ -100,6 +101,10 @@ install_files() {
     install -m 0644 \
         "${SRC}/usr/local/www/widgets/widgets/mwddns.widget.php" \
         "${WWW_WIDGET}"
+
+    # Ensure runtime metadata/cache directory exists
+    mkdir -p "${MWDDNS_METADATA_DIR}"
+    chmod 700 "${MWDDNS_METADATA_DIR}" 2>/dev/null || true
 
     # Register cron job via pfSense PHP bootstrap
     /usr/local/bin/php -r "
@@ -354,6 +359,10 @@ uninstall_files() {
           "${WWW_WIDGET}" "${CRON_SCRIPT}" \
           "${WATCHER_PY}" "${WATCHER_RC}"
     rm -rf /usr/local/pkg/mwddns
+
+    # Remove runtime metadata state file and clean empty directory
+    rm -f "${MWDDNS_METADATA_DIR}/metadata.json"
+    rmdir "${MWDDNS_METADATA_DIR}" 2>/dev/null || true
 
     if [ "${_do_purge}" = "1" ]; then
         echo "==> Removal complete. Config data has been purged from config.xml."
