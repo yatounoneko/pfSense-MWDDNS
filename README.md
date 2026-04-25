@@ -9,6 +9,21 @@ The purpose of this plugin is to solve the problem that the native DDNS plugin c
 
 ---
 
+Dashboard widget:
+
+<img width="auto" height="150" alt="Image" src="https://github.com/user-attachments/assets/fc0b71f2-c7f2-4889-b89c-3705e9a2acca" />
+
+Portal / status page:
+
+<img width="800" height="auto" alt="Image" src="https://github.com/user-attachments/assets/73700895-9a3c-48ed-b622-b094f6b5ebb9" />
+
+Rule configuration：
+
+<img width="800" height="auto" alt="Image" src="https://github.com/user-attachments/assets/b8efbede-9f06-4c27-941d-2a5e1cb238cd" />
+
+
+---
+
 ## Features
 
 | # | Feature |
