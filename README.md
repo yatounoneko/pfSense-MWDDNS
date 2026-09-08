@@ -83,7 +83,7 @@ install.sh                          # Manual installation helper
 
 ## Requirements
 
-* pfSense CE 2.7.x / 2.8.x
+* pfSense CE 2.7.x / 2.8.x / 2.9.x
 * Python 3.11
 * Credentials/API access for **at least one supported DNS provider**:
   * Cloudflare: API Token + Zone ID
