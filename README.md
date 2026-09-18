@@ -56,7 +56,7 @@ Rule configuration：
 
 ## Repository layout
 
-### Debug information (1.0.10)
+### Debug information (1.0.11)
 
 Open **Services > Multi-WAN DDNS > Debug information**. Choose the number of
 recent days (default **3**, range 1-14), select optional network/WebGUI/runtime
@@ -140,6 +140,16 @@ These are resource bounds, not a promise that all three days fit. Check
 interpreting results. Offline regressions do not certify on-device pfSense
 behavior. Upgrade using the same `sh install.sh` flow without uninstalling;
 existing rules, credentials and debug preferences are retained.
+
+### 1.0.11 maintenance update
+
+- Treat both `false` and `-1` configuration-write results as failures during
+  rule/Debug saves and installer registration/removal.
+- Clean incomplete uploads before starting a worker. Discarding an abandoned
+  upload no longer requires a readable status file; worker locking, temporary
+  path restrictions and persistent backups are unchanged.
+- An existing 1.0.10 installation can upload the versioned 1.0.11 release ZIP
+  through the upgrade page. Keep **Preserve data** selected for a normal update.
 
 ### Local WebGUI upgrades (1.0.10 and later)
 

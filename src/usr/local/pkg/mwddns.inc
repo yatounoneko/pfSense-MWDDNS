@@ -345,7 +345,8 @@ function mwddns_save_rules(array $rules, ?string $expectedRevision = null): void
         $before = $config;
         try {
             $config[MWDDNS_CONFIG_KEY]['rule'] = $definitions;
-            if (write_config('MWDDNS: rules saved') === false) {
+            $saved = write_config('MWDDNS: rules saved');
+            if ($saved === false || $saved === -1) {
                 throw new RuntimeException('pfSense rejected the configuration write.');
             }
         } catch (Throwable $e) {

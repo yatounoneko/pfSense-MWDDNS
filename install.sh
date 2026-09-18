@@ -34,7 +34,7 @@ WWW_WIDGET="/usr/local/www/widgets/widgets/mwddns.widget.php"
 CRON_SCRIPT="/usr/local/bin/mwddns_cron.php"
 WATCHER_PY="/usr/local/bin/mwddns_gateway_watcher.py"
 WATCHER_RC="/usr/local/etc/rc.d/mwddns_watcher"
-PKG_VERSION="1.0.10"
+PKG_VERSION="1.0.11"
 MWDDNS_METADATA_DIR="/var/run/mwddns"
 
 # ---------------------------------------------------------------------------
@@ -280,7 +280,8 @@ install_files() {
         if (\$changed) {
             \$config['installedpackages']['package'] = array_values(\$packages);
             \$config['installedpackages']['menu'] = array_values(\$menus);
-            if (write_config('MWDDNS: register/fix package and menu for Services') === false) {
+            \$saved = write_config('MWDDNS: register/fix package and menu for Services');
+            if (\$saved === false || \$saved === -1) {
                 throw new RuntimeException('MWDDNS: configuration write failed.');
             }
             echo (\$found ? 'Package registration updated.' : 'Package registration added.') . PHP_EOL;
@@ -321,7 +322,8 @@ purge_config() {
         }
         if (isset(\$config['mwddns'])) {
             unset(\$config['mwddns']);
-            if (write_config('MWDDNS: configuration purged by uninstall') === false) {
+            \$saved = write_config('MWDDNS: configuration purged by uninstall');
+            if (\$saved === false || \$saved === -1) {
                 throw new RuntimeException('MWDDNS: configuration write failed.');
             }
             echo 'MWDDNS configuration removed from config.xml.' . PHP_EOL;
@@ -426,7 +428,8 @@ uninstall_files() {
         if (\$changed) {
             \$config['installedpackages']['package'] = array_values(\$filtered);
             \$config['installedpackages']['menu'] = array_values(\$menuFiltered);
-            if (write_config('MWDDNS: unregister package and menu from Services') === false) {
+            \$saved = write_config('MWDDNS: unregister package and menu from Services');
+            if (\$saved === false || \$saved === -1) {
                 throw new RuntimeException('MWDDNS: configuration write failed.');
             }
             echo 'Package registration removed.' . PHP_EOL;
@@ -435,7 +438,8 @@ uninstall_files() {
             echo 'Package registration not found.' . PHP_EOL;
             if (\$menuChanged) {
                 \$config['installedpackages']['menu'] = array_values(\$menuFiltered);
-                if (write_config('MWDDNS: remove orphan menu registration') === false) {
+                \$saved = write_config('MWDDNS: remove orphan menu registration');
+                if (\$saved === false || \$saved === -1) {
                     throw new RuntimeException('MWDDNS: configuration write failed.');
                 }
                 echo 'Menu registration removed.' . PHP_EOL;

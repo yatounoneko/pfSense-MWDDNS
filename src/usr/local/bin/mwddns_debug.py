@@ -909,7 +909,7 @@ def collect(settings, now):
     cutoff = now - settings["days"] * 86400
     report = {
         "schema": "mwddns-debug-v2",
-        "collector_version": "1.0.10",
+        "collector_version": "1.0.11",
         "generated_at": stamp(now),
         "window": {"days": settings["days"], "start": stamp(cutoff), "end": stamp(now)},
         "privacy": {

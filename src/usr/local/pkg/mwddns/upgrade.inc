@@ -157,11 +157,24 @@ function mwddns_upgrade_action(string $action, array $post, array $files): strin
             if (disk_free_space(MWDDNS_UPGRADE_DIR) < MWDDNS_UPGRADE_MAX_ZIP * 2) { throw new RuntimeException('DISK_SPACE'); }
             $id = bin2hex(random_bytes(16));
             $path = mwddns_upgrade_path($id);
-            if (!mkdir($path, 0700) || !move_uploaded_file($file['tmp_name'], $path . '/upload.zip')) {
-                throw new RuntimeException('UPLOAD_FAILED');
+            if (!mkdir($path, 0700)) { throw new RuntimeException('UPLOAD_FAILED'); }
+            try {
+                if (!move_uploaded_file($file['tmp_name'], $path . '/upload.zip')) {
+                    throw new RuntimeException('UPLOAD_FAILED');
+                }
+                chmod($path . '/upload.zip', 0600);
+                mwddns_upgrade_write($path . '/status.json', ['state' => 'checking', 'stage' => 'checking', 'started' => time()]);
+            } catch (Throwable $error) {
+                // Only this new job exists here; no worker has been launched.
+                // Remove known temporary files without traversing any directory.
+                foreach (['status.json.tmp', 'status.json', 'upload.zip'] as $name) {
+                    $temporary = $path . '/' . $name;
+                    if (is_file($temporary) || is_link($temporary)) { @unlink($temporary); }
+                }
+                @rmdir($path);
+                throw $error;
             }
-            chmod($path . '/upload.zip', 0600);
-            mwddns_upgrade_write($path . '/status.json', ['state' => 'checking', 'stage' => 'checking', 'started' => time()]);
+            // A launch failure may still have started a worker. Keep its job.
             mwddns_upgrade_spawn('inspect', $id);
             return $id;
         }

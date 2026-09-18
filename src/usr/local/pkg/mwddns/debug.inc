@@ -56,7 +56,8 @@ function mwddns_debug_save(array $post): array
                 $stored[$key] = $settings[$key] ? 'yes' : 'no';
             }
             $config[MWDDNS_CONFIG_KEY]['debug'] = $stored;
-            if (write_config('MWDDNS: debug collection settings saved') === false) {
+            $saved = write_config('MWDDNS: debug collection settings saved');
+            if ($saved === false || $saved === -1) {
                 throw new RuntimeException('Configuration write failed.');
             }
         } catch (Throwable $e) {

@@ -448,10 +448,12 @@ def main():
     try:
         with locked(job / "worker.lock"):
             owns_job = True
-            state = read_json(job / "status.json")
             if sys.argv[1] == "discard":
+                # Interrupted uploads may have no valid status. Ownership and
+                # path checks, not status contents, authorize temporary cleanup.
                 remove_job(job)
                 return 0
+            state = read_json(job / "status.json")
             expected = "checking" if sys.argv[1] == "inspect" else "queued"
             if state.get("state") != expected or not 0 <= time.time() - int(state.get("started", 0)) < 86400:
                 raise UpgradeError("EXPIRED")
