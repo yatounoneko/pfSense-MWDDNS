@@ -201,6 +201,27 @@ interpreting results. Offline regressions do not certify on-device pfSense
 behavior. Upgrade using the same `sh install.sh` flow without uninstalling;
 existing rules, credentials and debug preferences are retained.
 
+### 1.1.1 release
+
+- The upgrade page can check GitHub's latest stable release, download its exact
+  versioned upgrade ZIP, and pass it through the existing confirmation/install
+  flow. Checking and downloading never install automatically. No cron check
+  or background auto-update has been added.
+- GitHub requests run in a bounded worker with verified HTTPS, fixed repository
+  and redirect-host restrictions, no credentials/proxies, size/time limits and
+  pinned release/asset identity. The downloaded SHA256 must match GitHub's
+  asset digest; all existing manifest, file and newer-version checks still apply.
+  These integrity checks are not a digital publisher signature.
+- Three retained jobs and one provisional check/upload are permitted. Previous
+  jobs are pruned only after a newer ZIP passes validation. If a provisional
+  check/download fails, discard that job before retrying when all slots are full.
+  Active/interrupted/recovery-required jobs and persistent backups are protected.
+- PHP-FPM opcode invalidation is recorded once per completed upgrade rather than
+  repeated on every status/history read.
+- First install 1.1.1 using the existing manual upload/install route. Its new
+  online flow can install subsequent newer releases; equal/older versions remain
+  rejected. Network failure leaves manual upload available.
+
 ### 1.1.0 release
 
 - Show actual collection-wide Debug totals after completion instead of reset

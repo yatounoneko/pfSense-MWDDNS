@@ -10,6 +10,10 @@ import re
 import resource
 import shutil
 import signal
+import ssl
+import urllib.error
+import urllib.parse
+import urllib.request
 import stat
 import subprocess
 import sys
@@ -24,6 +28,10 @@ XML = Path("/usr/local/pkg/mwddns.xml")
 CONFIG_HELPER = Path("/usr/local/bin/mwddns_upgrade_config.php")
 RC = "/usr/local/etc/rc.d/mwddns_watcher"
 MAX_ZIP = 8 * 1024 * 1024
+REPOSITORY = "yatounoneko/pfSense-MWDDNS"
+RELEASE_API = "https://api.github.com/repos/" + REPOSITORY + "/releases/"
+RELEASE_WEB = "https://github.com/" + REPOSITORY + "/releases/"
+DOWNLOAD_HOSTS = {"github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"}
 MAX_EXPANDED = 32 * 1024 * 1024
 MAX_FILE = 4 * 1024 * 1024
 MAX_RUNTIME = 64 * 1024 * 1024
@@ -215,18 +223,232 @@ def extract_archive(path, target, checked):
 
 
 @contextlib.contextmanager
-def locked(path):
+def locked(path, wait=0):
     if path.is_symlink():
         raise UpgradeError("UNSAFE_FILE")
     with path.open("a+b") as handle:
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise UpgradeError("BUSY") from None
+        deadline = time.monotonic() + wait
+        while True:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise UpgradeError("BUSY") from None
+                time.sleep(0.05)
         try:
             yield
         finally:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, message, headers, new_url):
+        return None
+
+
+def checked_url(url, hosts):
+    if not isinstance(url, str) or len(url) > 4096 or re.search(r"[\x00-\x20\x7f]", url):
+        raise UpgradeError("RELEASE_INVALID")
+    try:
+        parts = urllib.parse.urlsplit(url)
+        if (parts.scheme != "https" or parts.hostname not in hosts or
+                parts.port not in (None, 443) or parts.username is not None or
+                parts.password is not None or parts.fragment):
+            raise UpgradeError("RELEASE_INVALID")
+    except ValueError:
+        raise UpgradeError("RELEASE_INVALID") from None
+    return url
+
+
+def remote_read(url, maximum, destination=None, hosts=None):
+    """No credentials, environment proxies, HTTP downgrades or arbitrary hosts."""
+    hosts = hosts or {"api.github.com"}
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}), NoRedirect(),
+        urllib.request.HTTPSHandler(context=ssl.create_default_context()))
+    deadline = time.monotonic() + 90
+    for redirects in range(5):
+        checked_url(url, hosts)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise UpgradeError("NETWORK_TIMEOUT")
+        request = urllib.request.Request(url, headers={
+            "User-Agent": "pfSense-MWDDNS-updater",
+            "Accept": "application/vnd.github+json" if hosts == {"api.github.com"} else "application/octet-stream",
+            "Accept-Encoding": "identity",
+            "X-GitHub-Api-Version": "2022-11-28",
+        })
+        try:
+            response = opener.open(request, timeout=min(15, remaining))
+        except urllib.error.HTTPError as error:
+            location, code = error.headers.get("Location"), error.code
+            error.close()
+            if code in (301, 302, 303, 307, 308) and location and redirects < 4:
+                url = urllib.parse.urljoin(url, location)
+                continue
+            raise UpgradeError("RATE_LIMIT" if code in (403, 429) else
+                               "NO_RELEASE" if code == 404 else "REMOTE_UNAVAILABLE") from None
+        except (OSError, urllib.error.URLError):
+            raise UpgradeError("REMOTE_UNAVAILABLE") from None
+        with response:
+            if response.status != 200:
+                raise UpgradeError("REMOTE_UNAVAILABLE")
+            size = response.headers.get("Content-Length")
+            if size is not None and (not size.isdecimal() or int(size) > maximum):
+                raise UpgradeError("DOWNLOAD_LIMIT")
+            if response.headers.get("Content-Encoding", "identity").lower() != "identity":
+                raise UpgradeError("RELEASE_INVALID")
+            chunks, count = [], 0
+            handle = destination.open("xb") if destination else contextlib.nullcontext()
+            with handle as output:
+                while True:
+                    if time.monotonic() >= deadline:
+                        raise UpgradeError("NETWORK_TIMEOUT")
+                    chunk = response.read(min(65536, maximum - count + 1))
+                    if not chunk:
+                        break
+                    count += len(chunk)
+                    if count > maximum:
+                        raise UpgradeError("DOWNLOAD_LIMIT")
+                    if output is not None:
+                        output.write(chunk)
+                    else:
+                        chunks.append(chunk)
+            if size is not None and count != int(size):
+                raise UpgradeError("REMOTE_UNAVAILABLE")
+            return count if destination else b"".join(chunks)
+    raise UpgradeError("REMOTE_UNAVAILABLE")
+
+
+def release_metadata(data):
+    if (not isinstance(data, dict) or data.get("draft") is not False or
+            data.get("prerelease") is not False):
+        raise UpgradeError("RELEASE_INVALID")
+    tag = data.get("tag_name")
+    if not isinstance(tag, str) or not tag.startswith("v"):
+        raise UpgradeError("RELEASE_INVALID")
+    target = tag[1:]
+    version(target)
+    if data.get("html_url") != RELEASE_WEB + "tag/" + tag:
+        raise UpgradeError("RELEASE_INVALID")
+    release_id = data.get("id")
+    assets = data.get("assets")
+    if type(release_id) is not int or release_id < 1 or not isinstance(assets, list) or len(assets) > 100:
+        raise UpgradeError("RELEASE_INVALID")
+    filename = "pfSense-MWDDNS-" + target + ".zip"
+    matches = [item for item in assets if isinstance(item, dict) and item.get("name") == filename]
+    if len(matches) != 1:
+        raise UpgradeError("ASSET_INVALID")
+    asset = matches[0]
+    expected_url = RELEASE_WEB + "download/" + tag + "/" + filename
+    size, asset_id, checksum = asset.get("size"), asset.get("id"), asset.get("digest")
+    if (asset.get("state") != "uploaded" or asset.get("browser_download_url") != expected_url or
+            type(size) is not int or not 1 <= size <= MAX_ZIP or
+            type(asset_id) is not int or asset_id < 1 or not isinstance(checksum, str) or
+            not re.fullmatch(r"sha256:[a-f0-9]{64}", checksum)):
+        raise UpgradeError("ASSET_INVALID")
+    return {"version": target, "release_id": release_id, "asset_id": asset_id,
+            "size": size, "sha256": checksum[7:]}
+
+
+def fetch_release(target=None):
+    suffix = "latest"
+    if target is not None:
+        version(target)
+        suffix = "tags/v" + target
+    data = json.loads(remote_read(RELEASE_API + suffix, 512 * 1024))
+    return release_metadata(data)
+
+
+@contextlib.contextmanager
+def network_window():
+    # A wall-clock alarm also bounds DNS lookups and slow-drip TLS responses.
+    def expired(signum, frame):
+        raise UpgradeError("NETWORK_TIMEOUT")
+    previous = signal.signal(signal.SIGALRM, expired)
+    signal.alarm(120)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def download_release(job, current):
+    saved = read_json(job / "release.json")
+    checked_at = saved.get("checked_at")
+    if type(checked_at) is not int or not 0 <= time.time() - checked_at < 3600:
+        raise UpgradeError("RELEASE_EXPIRED")
+    if version(saved.get("version")) <= version(current):
+        raise UpgradeError("VERSION_NOT_NEWER")
+    # Pin what the administrator saw, rather than following a moving latest URL.
+    fresh = fetch_release(saved["version"])
+    if any(saved.get(key) != value for key, value in fresh.items()):
+        raise UpgradeError("RELEASE_CHANGED")
+    name = "pfSense-MWDDNS-" + fresh["version"] + ".zip"
+    url = RELEASE_WEB + "download/v" + fresh["version"] + "/" + name
+    temporary = job / "download.part"
+    if temporary.exists() or temporary.is_symlink():
+        raise UpgradeError("UNSAFE_FILE")
+    try:
+        count = remote_read(url, fresh["size"], temporary, DOWNLOAD_HOSTS)
+        if count != fresh["size"] or digest(temporary) != fresh["sha256"]:
+            raise UpgradeError("HASH_MISMATCH")
+        os.chmod(temporary, 0o600)
+        destination = job / "upload.zip"
+        if destination.exists() or destination.is_symlink():
+            raise UpgradeError("UNSAFE_FILE")
+        os.replace(temporary, destination)
+    finally:
+        if temporary.is_file() and not temporary.is_symlink():
+            temporary.unlink()
+    return fresh
+
+
+def admit_checked_job(job):
+    """Evict only after a newer archive has passed all checks; keep three jobs."""
+    with locked(BASE / "admission.lock", wait=5):
+        jobs = [path for path in BASE.glob("job-*")
+                if ID.fullmatch(path.name[4:]) and path.is_dir() and not path.is_symlink()]
+        if len(jobs) <= 3:
+            return
+        candidates = []
+        idle = {"ready", "available", "current", "complete", "failed", "rolled_back"}
+        for path in jobs:
+            if path == job:
+                continue
+            try:
+                private_dir(path)
+                item = read_json(path / "status.json")
+                if item.get("state") in idle:
+                    candidates.append((int(item.get("started", 0)), path))
+            except (OSError, ValueError, UpgradeError):
+                continue
+        for _, path in sorted(candidates):
+            try:
+                with locked(path / "worker.lock"):
+                    item = read_json(path / "status.json")
+                    if item.get("state") not in idle:
+                        continue
+                    # Bounded preflight: never traverse links or persistent backups.
+                    started, count = time.monotonic(), 0
+                    for directory, directories, files in os.walk(path, followlinks=False):
+                        for name in directories + files:
+                            candidate = Path(directory) / name
+                            count += 1
+                            if (count > 1024 or time.monotonic() - started > 2 or
+                                    candidate.is_symlink() or not (candidate.is_dir() or candidate.is_file())):
+                                raise UpgradeError("CLEANUP_FAILED")
+                    remove_job(path)
+                    jobs.remove(path)
+                    if len(jobs) <= 3:
+                        return
+            except UpgradeError as error:
+                if str(error) == "BUSY":
+                    continue
+                raise
+        raise UpgradeError("JOB_LIMIT")
 
 
 def run(argv, cwd=None, log=None, timeout=30, required=True):
@@ -432,7 +654,7 @@ def remove_job(job):
 
 
 def main():
-    if len(sys.argv) != 3 or sys.argv[1] not in ("inspect", "install", "discard") or not ID.fullmatch(sys.argv[2]):
+    if len(sys.argv) != 3 or sys.argv[1] not in ("inspect", "install", "discard", "check", "download") or not ID.fullmatch(sys.argv[2]):
         return 2
     if os.geteuid() != 0:
         return 2
@@ -454,12 +676,28 @@ def main():
                 remove_job(job)
                 return 0
             state = read_json(job / "status.json")
-            expected = "checking" if sys.argv[1] == "inspect" else "queued"
+            expected = "queued" if sys.argv[1] == "install" else "checking"
             if state.get("state") != expected or not 0 <= time.time() - int(state.get("started", 0)) < 86400:
                 raise UpgradeError("EXPIRED")
             current = installed_version()
+            if sys.argv[1] == "check":
+                with network_window():
+                    latest = fetch_release()
+                atomic(job / "release.json", {**latest, "checked_at": int(time.time())})
+                result = "available" if version(latest["version"]) > version(current) else "current"
+                state.update(state=result, stage=result, version=latest["version"], previous_version=current)
+                atomic(job / "status.json", state)
+                return 0
+            if sys.argv[1] == "download":
+                with network_window():
+                    downloaded = download_release(job, current)
+                state["stage"] = "checking"
+                atomic(job / "status.json", state)
             checked = inspect_archive(job / "upload.zip", current)
-            if sys.argv[1] == "inspect":
+            if sys.argv[1] in ("inspect", "download"):
+                if sys.argv[1] == "download" and checked["version"] != downloaded["version"]:
+                    raise UpgradeError("VERSION_INVALID")
+                admit_checked_job(job)
                 state.update(state="ready", stage="ready", version=checked["version"],
                              previous_version=current, sha256=checked["sha256"])
                 atomic(job / "status.json", state)

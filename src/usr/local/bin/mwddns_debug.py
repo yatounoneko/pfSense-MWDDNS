@@ -25,7 +25,7 @@ import time
 from urllib.parse import quote
 
 # Legacy upgrade validators require one literal collector_version declaration.
-COLLECTOR_METADATA = {"collector_version": "1.1.0"}
+COLLECTOR_METADATA = {"collector_version": "1.1.1"}
 
 BASE = Path("/var/run/mwddns/debug")
 MAX_FILE = 8 * 1024 * 1024

@@ -49,13 +49,41 @@ function mwddns_upgrade_write(string $path, array $value): void
         }
     } finally { umask($old); }
 }
+function mwddns_upgrade_refresh_cache(string $id): void
+{
+    if (!function_exists('opcache_invalidate')) { return; }
+    $root = mwddns_upgrade_path($id);
+    $marker = $root . '/opcache.done';
+    if (!is_dir($root) || fileowner($root) !== 0 || (fileperms($root) & 0077) !== 0 ||
+        is_link($marker) || (file_exists($marker) && !is_file($marker))) { return; }
+    $old = umask(0077);
+    try { $handle = @fopen($marker, 'c+'); }
+    finally { umask($old); }
+    if ($handle === false) { return; }
+    try {
+        if (!flock($handle, LOCK_EX | LOCK_NB) || fread($handle, 4) === 'done') { return; }
+        foreach (array_merge(
+            ['/usr/local/pkg/mwddns.inc', '/usr/local/www/mwddns.php',
+             '/usr/local/www/mwddns_edit.php', '/usr/local/www/mwddns_debug.php',
+             '/usr/local/www/mwddns_upgrade.php', '/usr/local/www/widgets/widgets/mwddns.widget.php'],
+            glob('/usr/local/pkg/mwddns/*.inc') ?: [], glob('/usr/local/pkg/mwddns/*.php') ?: [],
+            glob('/usr/local/pkg/mwddns/locale/*.php') ?: []
+        ) as $file) {
+            if (function_exists('opcache_is_script_cached') && !opcache_is_script_cached($file)) { continue; }
+            if (!@opcache_invalidate($file, true)) { return; }
+        }
+        rewind($handle);
+        fwrite($handle, 'done');
+        fflush($handle);
+    } finally { fclose($handle); }
+}
 function mwddns_upgrade_status(string $id): array
 {
     $path = mwddns_upgrade_path($id) . '/status.json';
     if (is_link($path) || !is_file($path) || filesize($path) > 65536) { return ['state' => 'missing']; }
     $raw = json_decode((string)file_get_contents($path), true);
     if (!is_array($raw)) { return ['state' => 'missing']; }
-    $states = ['checking', 'ready', 'queued', 'running', 'complete', 'failed', 'rolled_back', 'recovery_required'];
+    $states = ['checking', 'available', 'current', 'ready', 'queued', 'running', 'complete', 'failed', 'rolled_back', 'recovery_required'];
     $result = ['state' => in_array($raw['state'] ?? '', $states, true) ? $raw['state'] : 'missing',
         'started' => (int)($raw['started'] ?? 0)];
     foreach (['stage', 'error', 'version', 'previous_version', 'sha256', 'backup', 'mode'] as $key) {
@@ -65,19 +93,12 @@ function mwddns_upgrade_status(string $id): array
     }
     if (in_array($result['state'], ['checking', 'queued', 'running'], true) && time() - $result['started'] > 900) {
         $result['state'] = 'interrupted';
+    } elseif ($result['state'] === 'available' && time() - $result['started'] >= 3600) {
+        $result['state'] = 'expired';
     } elseif ($result['state'] === 'ready' && time() - $result['started'] >= 86400) {
         $result['state'] = 'expired';
     }
-    if ($result['state'] === 'complete' && function_exists('opcache_invalidate')) {
-        // Invalidate PHP-FPM's plugin cache here, not from CLI. Do not restart WebGUI.
-        foreach (array_merge(
-            ['/usr/local/pkg/mwddns.inc', '/usr/local/www/mwddns.php',
-             '/usr/local/www/mwddns_edit.php', '/usr/local/www/mwddns_debug.php',
-             '/usr/local/www/mwddns_upgrade.php', '/usr/local/www/widgets/widgets/mwddns.widget.php'],
-            glob('/usr/local/pkg/mwddns/*.inc') ?: [], glob('/usr/local/pkg/mwddns/*.php') ?: [],
-            glob('/usr/local/pkg/mwddns/locale/*.php') ?: []
-        ) as $file) { @opcache_invalidate($file, true); }
-    }
+    if ($result['state'] === 'complete') { mwddns_upgrade_refresh_cache($id); }
     return $result;
 }
 function mwddns_upgrade_jobs(): array
@@ -91,71 +112,9 @@ function mwddns_upgrade_jobs(): array
     uasort($jobs, static fn(array $a, array $b): int => ($b['started'] ?? 0) <=> ($a['started'] ?? 0));
     return $jobs;
 }
-/**
- * Called with admission.lock held. Only idle temporary jobs may be evicted.
- * Worker ownership, not the GUI's age-based status, protects live operations.
- */
-function mwddns_upgrade_prune_oldest(): bool
-{
-    foreach (array_reverse(mwddns_upgrade_jobs(), true) as $id => $status) {
-        if (!in_array($status['state'], ['ready', 'expired', 'complete', 'failed', 'rolled_back'], true)) {
-            continue;
-        }
-        $path = mwddns_upgrade_path($id);
-        $root = realpath($path);
-        $base = realpath(MWDDNS_UPGRADE_DIR);
-        if ($root === false || $base === false || dirname($root) !== $base ||
-            basename($root) !== 'job-' . $id || fileowner($root) !== 0 ||
-            (fileperms($root) & 0077) !== 0) {
-            continue;
-        }
-        $lockPath = $path . '/worker.lock';
-        if (is_link($lockPath) || (file_exists($lockPath) && !is_file($lockPath))) { continue; }
-        $old = umask(0077);
-        try { $lock = @fopen($lockPath, 'c'); }
-        finally { umask($old); }
-        if ($lock === false) { continue; }
-        try {
-            if (!flock($lock, LOCK_EX | LOCK_NB)) { continue; }
-            $statusPath = $path . '/status.json';
-            if (is_link($statusPath) || !is_file($statusPath) || filesize($statusPath) > 65536) { continue; }
-            $raw = json_decode((string)file_get_contents($statusPath), true);
-            if (!is_array($raw) || !in_array($raw['state'] ?? '', ['ready', 'complete', 'failed', 'rolled_back'], true)) {
-                continue;
-            }
-            // Preflight a bounded, child-first list before removing anything.
-            // Never follow links or touch /conf/mwddns-backups.
-            $entries = [];
-            $deadline = microtime(true) + 2.0;
-            $tree = new RecursiveIteratorIterator(
-                new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS),
-                RecursiveIteratorIterator::CHILD_FIRST
-            );
-            foreach ($tree as $entry) {
-                $entryPath = $entry->getPathname();
-                if (count($entries) >= 1024 || microtime(true) > $deadline ||
-                    $entry->isLink() || (!$entry->isDir() && !$entry->isFile()) ||
-                    strpos($entryPath, $root . '/') !== 0) {
-                    throw new RuntimeException('CLEANUP_FAILED');
-                }
-                $entries[] = [$entryPath, $entry->isDir()];
-            }
-            unset($tree);
-            foreach ($entries as [$entryPath, $isDirectory]) {
-                if (!($isDirectory ? @rmdir($entryPath) : @unlink($entryPath))) {
-                    throw new RuntimeException('CLEANUP_FAILED');
-                }
-            }
-            if (!@rmdir($root)) { throw new RuntimeException('CLEANUP_FAILED'); }
-            return true;
-        } finally { fclose($lock); }
-    }
-    return false;
-}
-
 function mwddns_upgrade_record_start_failure(string $action, string $path): void
 {
-    if (!in_array($action, ['inspect', 'install'], true)) { return; }
+    if (!in_array($action, ['inspect', 'install', 'check', 'download'], true)) { return; }
     $lockPath = $path . '/worker.lock';
     if (is_link($lockPath)) { return; }
     $old = umask(0077);
@@ -169,7 +128,7 @@ function mwddns_upgrade_record_start_failure(string $action, string $path): void
         if (is_link($statusPath) || !is_file($statusPath) || filesize($statusPath) > 65536) { return; }
         // Read the persisted state, without the GUI's age-based status mapping.
         $status = json_decode((string)file_get_contents($statusPath), true);
-        $expected = $action === 'inspect' ? 'checking' : 'queued';
+        $expected = $action === 'install' ? 'queued' : 'checking';
         if (!is_array($status) || ($status['state'] ?? '') !== $expected) { return; }
         $status['state'] = 'failed';
         $status['stage'] = 'failed';
@@ -179,7 +138,7 @@ function mwddns_upgrade_record_start_failure(string $action, string $path): void
 }
 function mwddns_upgrade_spawn(string $action, string $id): void
 {
-    if (!in_array($action, ['inspect', 'install', 'discard'], true)) { throw new RuntimeException('INVALID_STATE'); }
+    if (!in_array($action, ['inspect', 'install', 'discard', 'check', 'download'], true)) { throw new RuntimeException('INVALID_STATE'); }
     $path = mwddns_upgrade_path($id);
     try {
         if (session_status() === PHP_SESSION_ACTIVE) { session_write_close(); }
@@ -208,6 +167,25 @@ function mwddns_upgrade_action(string $action, array $post, array $files): strin
     if ($lock === false) { throw new RuntimeException('STORAGE_FAILED'); }
     try {
         if (!flock($lock, LOCK_EX | LOCK_NB)) { throw new RuntimeException('BUSY'); }
+        if ($action === 'check') {
+            if (count(mwddns_upgrade_jobs()) >= 4) { throw new RuntimeException('JOB_LIMIT'); }
+            $id = bin2hex(random_bytes(16));
+            $path = mwddns_upgrade_path($id);
+            if (!mkdir($path, 0700)) { throw new RuntimeException('STORAGE_FAILED'); }
+            try {
+                mwddns_upgrade_write($path . '/status.json', [
+                    'state' => 'checking', 'stage' => 'checking_release', 'started' => time(),
+                ]);
+            } catch (Throwable $error) {
+                foreach (['status.json.tmp', 'status.json'] as $name) {
+                    if (is_file($path . '/' . $name)) { @unlink($path . '/' . $name); }
+                }
+                @rmdir($path);
+                throw $error;
+            }
+            mwddns_upgrade_spawn('check', $id);
+            return $id;
+        }
         if ($action === 'upload') {
             $file = $files['package'] ?? [];
             if (!is_array($file) || ($file['error'] ?? -1) !== UPLOAD_ERR_OK ||
@@ -215,10 +193,8 @@ function mwddns_upgrade_action(string $action, array $post, array $files): strin
                 filesize($file['tmp_name']) > MWDDNS_UPGRADE_MAX_ZIP || filesize($file['tmp_name']) < 1) {
                 throw new RuntimeException('UPLOAD_FAILED');
             }
-            // Validate the incoming upload before evicting an old temporary job.
-            while (count(mwddns_upgrade_jobs()) >= 3) {
-                if (!mwddns_upgrade_prune_oldest()) { throw new RuntimeException('JOB_LIMIT'); }
-            }
+            // One provisional slot preserves all three old jobs until ZIP validation.
+            if (count(mwddns_upgrade_jobs()) >= 4) { throw new RuntimeException('JOB_LIMIT'); }
             if (disk_free_space(MWDDNS_UPGRADE_DIR) < MWDDNS_UPGRADE_MAX_ZIP * 2) { throw new RuntimeException('DISK_SPACE'); }
             $id = bin2hex(random_bytes(16));
             $path = mwddns_upgrade_path($id);
@@ -247,6 +223,16 @@ function mwddns_upgrade_action(string $action, array $post, array $files): strin
         $id = $post['job'];
         $path = mwddns_upgrade_path($id);
         $status = mwddns_upgrade_status($id);
+        if ($action === 'download') {
+            if ($status['state'] !== 'available') { throw new RuntimeException('INVALID_STATE'); }
+            if (disk_free_space(MWDDNS_UPGRADE_DIR) < MWDDNS_UPGRADE_MAX_ZIP * 2) { throw new RuntimeException('DISK_SPACE'); }
+            $status['state'] = 'checking';
+            $status['stage'] = 'downloading';
+            $status['started'] = time();
+            mwddns_upgrade_write($path . '/status.json', $status);
+            mwddns_upgrade_spawn('download', $id);
+            return $id;
+        }
         if ($action === 'discard') {
             if (in_array($status['state'], ['checking', 'queued', 'running'], true)) { throw new RuntimeException('BUSY'); }
             mwddns_upgrade_spawn('discard', $id);

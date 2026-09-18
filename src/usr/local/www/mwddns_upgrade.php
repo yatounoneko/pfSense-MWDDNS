@@ -45,6 +45,16 @@ $errorLabels = [
     'EXPIRED' => 'This upload has expired. Upload the ZIP again.',
     'RECOVERY_REQUIRED' => 'Automatic recovery could not finish. Keep the backup and use manual recovery.',
     'INSTALL_FAILED' => 'Installation failed; the previous MWDDNS files and data were restored.',
+    'RELEASE_INVALID' => 'GitHub returned invalid release information. No installation was started.',
+    'ASSET_INVALID' => 'The release has no unique supported upgrade ZIP with a GitHub SHA256 digest.',
+    'RELEASE_CHANGED' => 'The release changed after checking. Check the latest version again.',
+    'RELEASE_EXPIRED' => 'The version check expired. Check the latest version again.',
+    'REMOTE_UNAVAILABLE' => 'GitHub is unavailable or TLS verification failed. Retry later or upload a release ZIP manually.',
+    'NETWORK_TIMEOUT' => 'The GitHub request timed out. No installation was started.',
+    'RATE_LIMIT' => 'GitHub refused the request or its rate limit was reached. Retry later.',
+    'NO_RELEASE' => 'No published release was found.',
+    'DOWNLOAD_LIMIT' => 'The release download exceeds the allowed size.',
+
 ];
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
@@ -52,7 +62,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             throw new RuntimeException('CONFIRMATION_REQUIRED');
         }
         $action = $_POST['action'] ?? '';
-        if (!is_string($action) || !in_array($action, ['upload', 'install', 'discard'], true)) {
+        if (!is_string($action) || !in_array($action, ['upload', 'install', 'discard', 'check', 'download'], true)) {
             throw new RuntimeException('INVALID_STATE');
         }
         $job = mwddns_upgrade_action($action, $_POST, $_FILES);
@@ -66,6 +76,9 @@ $status = $job !== '' ? mwddns_upgrade_status($job) : ['state' => 'none'];
 $labels = [
     'none' => 'Upload a release to begin.', 'checking' => 'Checking the uploaded ZIP...',
     'ready' => 'Package checked. Choose the upgrade mode and confirm.',
+    'available' => 'A newer stable release is available.',
+    'current' => 'No newer stable release is available.',
+
     'queued' => 'Queued', 'running' => 'Upgrade in progress. Do not reboot.',
     'complete' => 'Upgrade complete.', 'failed' => 'Upgrade failed.',
     'rolled_back' => 'Upgrade failed; previous MWDDNS files and data restored.',
@@ -74,6 +87,11 @@ $labels = [
 ];
 $stageLabels = [
     'checking' => 'Checking the uploaded ZIP...', 'ready' => 'Package ready',
+    'checking_release' => 'Checking GitHub for the latest stable release...',
+    'downloading' => 'Downloading and verifying the release...',
+    'available' => 'A newer stable release is available.',
+    'current' => 'No newer stable release is available.',
+
     'queued' => 'Waiting to start', 'backing_up' => 'Creating private backup',
     'installing' => 'Installing plugin files', 'resetting' => 'Clearing plugin data',
     'rolling_back' => 'Restoring previous version', 'complete' => 'Upgrade complete.',
@@ -118,7 +136,7 @@ include('head.inc');
     <p><?= mwddns_upgrade_label('Installed version') ?>: <strong><?= mwddns_upgrade_h(mwddns_upgrade_version()) ?></strong></p>
     <div class="alert alert-warning"><?= mwddns_upgrade_label('Only upload releases from a source you trust. The installer runs as root. SHA256 checks detect changed files; they do not authenticate the publisher.') ?></div>
     <p><?= mwddns_upgrade_label('Uploads and working files use /tmp and may disappear on reboot. They are not permanent backups.') ?></p>
-    <p><?= mwddns_upgrade_label('At most 3 uploads are retained. A new upload automatically removes the oldest idle upload when needed. Active, interrupted and recovery-required jobs are protected; persistent backups are kept.') ?></p>
+    <p><?= mwddns_upgrade_label('Keep up to 3 retained jobs plus 1 provisional check or upload. Only a validated newer ZIP can remove the oldest idle job. Failed checks preserve previous jobs; discard an unwanted provisional job to free its slot. Persistent backups are kept.') ?></p>
     <p><?= mwddns_upgrade_label('Before installation, MWDDNS data and files are backed up under /conf/mwddns-backups. Backups contain credentials, remain after reset, and must not be shared.') ?></p>
     <p><?= mwddns_upgrade_label('Do not reboot or change other pfSense configuration during installation. Only MWDDNS is paused; power loss may require manual recovery.') ?></p>
     <form method="post" enctype="multipart/form-data" action="/mwddns_upgrade.php">
@@ -132,6 +150,29 @@ include('head.inc');
             <a class="btn btn-default" href="/mwddns.php"><?= mwddns_upgrade_label('Back to rules') ?></a>
         </div>
     </form>
+</div></div>
+<div class="panel panel-default">
+<div class="panel-heading"><h2 class="panel-title"><?= mwddns_upgrade_label('GitHub releases') ?></h2></div>
+<div class="panel-body">
+    <p><?= mwddns_upgrade_label('Check the latest stable release from yatounoneko/pfSense-MWDDNS. No scheduled checks or automatic installation are enabled.') ?></p>
+    <p class="help-block"><?= mwddns_upgrade_label('Checking and downloading contact GitHub over verified HTTPS. No configuration, logs or credentials are uploaded. Direct Internet access is required; environment proxies are not used.') ?></p>
+    <form method="post" action="/mwddns_upgrade.php">
+        <?= mwddns_csrf_input() ?>
+        <button class="btn btn-default" name="action" value="check"><i class="fa-solid fa-arrows-rotate" aria-hidden="true"></i> <?= mwddns_upgrade_label('Check latest version') ?></button>
+        <a class="btn btn-default" href="https://github.com/yatounoneko/pfSense-MWDDNS/releases/latest" target="_blank" rel="noopener noreferrer"><?= mwddns_upgrade_label('Open latest release') ?></a>
+    </form>
+<?php if (in_array($status['state'], ['available', 'current'], true) && preg_match('/^\\d+\\.\\d+\\.\\d+$/D', $status['version'] ?? '')): ?>
+    <p style="margin-top:16px"><?= mwddns_upgrade_label('Latest checked version') ?>:
+        <strong><?= mwddns_upgrade_h($status['version']) ?></strong></p>
+    <p><?= mwddns_upgrade_label($labels[$status['state']]) ?></p>
+<?php if ($status['state'] === 'available'): ?>
+    <form method="post" action="/mwddns_upgrade.php">
+        <?= mwddns_csrf_input() ?><input type="hidden" name="job" value="<?= $job ?>">
+        <button class="btn btn-primary" name="action" value="download"><i class="fa-solid fa-download" aria-hidden="true"></i> <?= mwddns_upgrade_label('Download and check this release') ?></button>
+    </form>
+    <p class="help-block"><?= mwddns_upgrade_label('Downloading does not install anything. After verification, choose whether to preserve data and confirm the upgrade below.') ?></p>
+<?php endif; ?>
+<?php endif; ?>
 </div></div>
 <div class="panel panel-default">
 <div class="panel-heading"><h2 class="panel-title"><?= mwddns_upgrade_label('Upgrade status') ?></h2></div>
