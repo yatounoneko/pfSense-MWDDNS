@@ -56,7 +56,7 @@ Rule configuration：
 
 ## Repository layout
 
-### Debug information (1.0.12)
+### Debug information (1.1.0)
 
 Open **Services > Multi-WAN DDNS > Debug information**. Choose the number of
 recent days (default **3**, range 1-14), select optional network/WebGUI/runtime
@@ -87,23 +87,69 @@ Reports are root-private runtime files, not files under the web document root.
 They expire for download after 24 hours; expired files are removed lazily on the
 next collection, and at most three jobs are retained. Preview is limited to
 128 KiB; use **Download sanitized report** for the full collected JSON. Reports
-can also be explicitly deleted. No extra cron job or permanent watcher is added.
+can also be explicitly deleted. **Recent Debug reports** lists retained jobs
+newest first with browser-local times, status, open and download actions.
+Listing reads metadata only; it does not start a collection or extend expiry.
+No extra cron job or permanent watcher is added.
+
+Version 1.0.18 also retains bounded progress checkpoints. The result page shows
+the last collector stage/source, elapsed and collector CPU seconds, scan indexes
+and counters. Writes are throttled to two seconds with explicit stage/file
+checkpoints. Times describe the last persisted measurement, not GUI waiting time.
+A worker wall-clock or CPU deadline now escapes per-file read-error handling
+and is recorded as a specific failure code.
+
+Starting with 1.1.0, completed jobs show collection-wide source/file/byte counts,
+matched/retained/dropped occurrences and exported event groups, calculated after
+final report allocation and size trimming. Per-source progress fields are not
+displayed as misleading zero totals after completion. During global stages with
+no active source, source-specific progress is labelled not applicable. Jobs
+collected by older versions may lack totals; missing totals are never invented.
+The small collector-diagnostics download includes these bounded totals.
+
+If collection fails, use **Download failure diagnostics** in the result or recent
+reports list before retrying. Completed jobs also offer **Download collector
+diagnostics** for final worker measurements. These small JSON exports contain
+only allowlisted stage/source/reason codes, validated timestamps and numeric
+counters; no raw log line, filename, traceback, exception message, credential or
+configuration is included. A numeric collector code line can help locate an
+exception without disclosing its text. Old jobs without checkpoints report
+missing measurements rather than invented durations. The normal report retains
+schema `mwddns-debug-v2` and adds pre-output timing measurements.
+
+A missing final status after 120 seconds is explicitly **unconfirmed**: it does
+not establish a timeout, memory exhaustion or even worker exit. A live worker
+lock prevents deletion or overlapping collection despite a stale GUI status.
+The last source/stage is an investigation lead, not proof that its log caused
+the failure. Existing 75-second wall, 60/65-second soft/hard CPU and 256 MiB memory
+limits are unchanged. This release does not claim every 11- or 14-day collection
+will complete; retained logs and resource limits still apply.
 
 The worker has a 75-second deadline, a 64 MiB total decompressed scan budget,
 8 MiB per file, 24 files per source, 5,000 event groups, and a 6 MiB output cap.
-Scan bytes are divided equally among enabled sources, each with a 6-second scan
-budget. Event groups instead have a guaranteed minimum of up to 256 per source,
-then share unused slots fairly, with a 2,000-group per-source ceiling and 5,000
-exported overall. Candidate buffering is bounded to 14,000 groups for seven
-sources; the existing 256 MiB worker memory limit still applies. DHCP traffic
-cannot consume PHP/nginx reservations.
+Scan bytes are divided equally among enabled sources. Smaller estimated on-disk
+sources are processed first so completed sources can release unused capacity.
+Each unvisited source reserves 6 scan seconds and 2,000 candidate groups, subject
+to the total deadlines. Scanning is bounded to 60 wall-clock seconds from collection
+entry and 50 collector CPU seconds, leaving headroom under the unchanged worker
+limits for serialization and output. Compressed disk size is only a work estimate.
+A busy source can borrow up to 5,000 candidate groups. The shared candidate pool
+is max(5,000, 2,000 * enabled sources), never more than 14,000 groups; the existing
+256 MiB worker memory limit still applies. Final allocation guarantees up to 256
+available groups per source, then shares remaining slots fairly within 5,000
+exported groups overall. DHCP traffic cannot consume other sources' reservations.
 Excess groups retain important events first, then newer events within that
 priority, subject to per-class reservations. Errors reserve one third of a
 source's slots, transitions one half, and routine messages the remainder.
 Unused reservations are borrowable, but an error flood cannot take the slots
 reserved for WAN/service context. Source summaries distinguish matched,
 retained, grouped and dropped occurrences, including per-class counts.
-The page warns when the report has gaps or collection limits.
+The page explains each source warning, actual versus allocated scan seconds,
+candidate capacity, and occurrences dropped at the candidate, shared allocation
+and report-size stages. Dropped counts cannot measure records that were never
+read. New source summaries also record the oldest/newest observed timestamps
+inside the requested window; neither these bounds nor empty warnings prove
+continuous log coverage.
 
 Schema `mwddns-debug-v2` groups repeated requests, PHP errors and other repetitive
 classes within one-hour buckets. Each group has `occurrences`, `first_seen` and
@@ -123,11 +169,25 @@ scanned, non-sensitive requests before event eviction. It combines WANs/PIDs
 per source; use the individual event aliases for attribution. The source table
 separates empty/stale logs, matching events and collection limits.
 
+Web diagnostics include recognized HTTP status codes (including nginx combined
+access logs), reported OS error numbers, fixed failure/operation/phase/backend
+classifications, numeric nginx worker/connection identifiers, and explicit
+PHP-FPM startup/ready/reload/stop/child-exit messages when present in scanned logs.
+Endpoint paths, request URLs, headers and raw error messages are never exported.
+Sensitive-line filtering still runs first. An errno is reported, not translated
+using another operating system's error table; classifications and equal event
+counts alone do not establish a root cause or pair separate requests.
+
 The page uses theme-compatible padded panels, a responsive two-column form,
 separate action rows and a keyboard-scrollable preview. The private WAN legend
 starts collapsed. Downloads use the report generation time, for example
 `mwddns-debug-2026-09-18_21-46-52.json`, not the time the download was clicked.
 Downloading the same report twice still produces the same filename.
+Coverage timestamps use the browser locale and time zone, including seconds;
+hover text and downloaded JSON retain the original ISO timestamps. Source names,
+timestamps and numeric groups stay intact, with horizontal table scrolling on
+narrow screens. Plugin panels and controls use the main page's square-corner
+geometry without changing other pfSense pages or overriding theme colors.
 
 DHCP details distinguish request destination, server and leased-address aliases,
 explicit script reasons and numeric intervals. A renewal interval is not a lease
@@ -140,6 +200,101 @@ These are resource bounds, not a promise that all three days fit. Check
 interpreting results. Offline regressions do not certify on-device pfSense
 behavior. Upgrade using the same `sh install.sh` flow without uninstalling;
 existing rules, credentials and debug preferences are retained.
+
+### 1.1.0 release
+
+- Show actual collection-wide Debug totals after completion instead of reset
+  source counters. Keep per-source checkpoints for active and failed jobs.
+- Preserve bounded, structured diagnostic exports and all existing resource
+  limits. Missing or rotated-away logs remain explicit coverage limitations.
+- Keep one shared collector version declaration for compatibility with existing
+  GUI upgrade validators; installer, package XML and collector versions agree.
+- Include the preceding maintenance updates: rule copying and duplicate-name
+  protection, native action icons and Cloudflare proxy indicators, consistent
+  rectangular/localized pages, Debug history and failure diagnostics, and
+  bounded upgrade-upload retention.
+- Upgrade using the attached versioned release ZIP with Preserve data selected.
+  GitHub's automatic source archives are not GUI upgrade packages.
+
+### 1.0.18 maintenance update
+
+- Prevent collector deadlines from being swallowed as recoverable log I/O errors.
+- Retain bounded, privacy-safe progress and failure codes with elapsed/CPU timings.
+- Add failure diagnostic downloads and live progress to the existing Debug page.
+- Distinguish an explicitly recorded failure from an unconfirmed stale status;
+  keep worker locks to protect active jobs during removal and new collection.
+- Preserve existing collection limits, DNS behavior and saved configuration.
+
+### 1.0.17 maintenance update
+
+- Add a native `fa-regular fa-clone` action before Edit. It opens the Add Rule
+  form with the source configuration, including provider fields and credentials,
+  prefilled. Source revision checks prevent a stale list from copying a
+  different rule after reindexing. No rule is saved and no DNS update starts
+  until Save; Cancel or leaving abandons the copy. Runtime update metadata is
+  not copied, and credentials are not put in URLs or draft storage.
+- Keep the source name in the form and require a different name before saving.
+  Names are compared after trimming surrounding whitespace and folding ASCII
+  letter case. New rules and edits reject conflicts with a translated error;
+  an edit excludes its own name. The shared write lock rejects any increase in
+  duplicate-name counts without preventing removal of legacy duplicates.
+- Save retains the existing CSRF/revision checks and immediate DNS update
+  behavior. A rejected save does not invoke the updater.
+
+### 1.0.16 maintenance update
+
+- Align the edit and delete controls in a shared flex row with matching 18px
+  native icons and equal-height transparent controls. Existing delete
+  confirmation, POST, revision and CSRF checks are unchanged.
+- Start the Cloudflare token storage warning on a separate line, retaining
+  its translated text and warning emphasis.
+- The version increment allows testing the normal data-preserving upgrade
+  from 1.0.15. DNS update behavior and upload/report retention are unchanged.
+
+### 1.0.15 maintenance update
+
+Rule deletion uses the native Font Awesome `fa-solid fa-trash-can` icon without
+a filled button background. The red icon keeps the existing confirmation,
+POST, revision check and CSRF protection.
+
+Uploading a fourth release automatically removes the oldest idle temporary
+upload to maintain the three-job limit. Ready, expired, completed, failed and
+rolled-back jobs are eligible only when their worker lock is free and their
+persisted state is idle. Active, interrupted, unknown and recovery-required
+jobs are not automatically removed. If all slots are protected, the upload is
+refused with an explanation. Temporary cleanup is bounded to the selected
+private `/tmp/mwddns-upgrade/job-*` tree and does not follow symbolic links.
+Persistent credential-bearing backups in `/conf/mwddns-backups` are never
+removed by upload rotation.
+
+Debug history lists report times, statuses and open/download actions.
+The existing 24-hour expiry and three-job retention policy are unchanged.
+
+### 1.0.14 maintenance update
+
+- Add bounded, structured WebGUI diagnostics without exporting requests, endpoints
+  or raw messages. Existing privacy filters, WAN/PID identity and quotas remain.
+- Keep Debug table identifiers/timestamps/numeric groups intact and format visible
+  coverage timestamps with the browser locale/time zone; JSON remains ISO.
+- Use a red delete-rule button with a separate trash icon, preserving POST/CSRF,
+  revision checking and explicit confirmation.
+- Use a localized upgrade confirmation dialog and translated validation/stage
+  labels. The exact reset phrase remains CLEAR MWDDNS; server-side trust, CSRF,
+  version, backup and reset checks are unchanged.
+- Share square-corner styling across the rule, edit, Debug and upgrade pages.
+  Upgrades still preserve data by default.
+
+### 1.0.13 maintenance update
+
+- Let busy Debug sources borrow unused scan time and candidate capacity while
+  preserving reservations for unvisited sources and all existing process limits.
+- Keep the 5,000-group final output and 6 MiB report caps; do not merge DHCP WAN
+  or PID identities. Existing five-minute request histograms remain available.
+- Explain limit reasons and per-stage dropped counts in English, Traditional
+  Chinese and Simplified Chinese, with actual scan time and requested-window bounds.
+- Upgrade using the existing WebGUI ZIP upload with data preservation selected,
+  or the original installer without uninstalling. Rules and credentials remain
+  unchanged. A 14-day request is still not a guarantee of 14-day retained logs.
 
 ### 1.0.12 maintenance update
 

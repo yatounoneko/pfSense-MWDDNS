@@ -15,6 +15,9 @@
 require_once('guiconfig.inc');
 require_once('/usr/local/pkg/mwddns.inc');
 
+// Provider credentials and unsaved copies must not be cached.
+header('Cache-Control: no-store');
+
 // Reject malformed arrays before trim(), array keys and HTML rendering.
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     foreach ($_POST as $key => $value) {
@@ -42,6 +45,31 @@ $rule     = $editMode ? mwddns_get_rule($id) : null;
 if ($editMode && $rule === null) {
     header('Location: /mwddns.php');
     exit;
+}
+
+// Copy is a read-only prefill of the add form, never an edit or saved draft.
+// Only a source index and revision travel in the URL, not provider credentials.
+$copyMode = false;
+if (array_key_exists('clone', $_GET)) {
+    $copyId = is_string($_GET['clone']) && ctype_digit($_GET['clone'])
+        ? filter_var($_GET['clone'], FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]])
+        : false;
+    if ($editMode || $_SERVER['REQUEST_METHOD'] !== 'GET' || $copyId === false ||
+        !is_string($_GET['revision'] ?? null) ||
+        !preg_match('/^[a-f0-9]{64}$/D', $_GET['revision'])) {
+        http_response_code(400);
+        exit(htmlspecialchars(mwddns_t('Invalid copy request. Reload the rules list and try again.'), ENT_QUOTES, 'UTF-8'));
+    }
+    $sourceRules = mwddns_get_rules();
+    if (!hash_equals(mwddns_rules_revision($sourceRules), $_GET['revision']) ||
+        !isset($sourceRules[$copyId])) {
+        header('Location: /mwddns.php?msg=copy_unavailable');
+        exit;
+    }
+    $rule = mwddns_rule_definition($sourceRules[$copyId]);
+    $copyMode = true;
+    // editMode stays false: Save posts to the normal add endpoint, and no
+    // force-update control is rendered for this unsaved configuration.
 }
 
 // ── Default field values ──────────────────────────────────────────────────────
@@ -92,6 +120,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'save') {
     // Common validation
     if ($name === '') {
         $errors[] = mwddns_t('Rule name is required.');
+    } else {
+        $nameKey = mwddns_rule_name_key($name);
+        $nameCounts = mwddns_rule_name_counts(mwddns_get_rules());
+        $matches = $nameCounts[$nameKey] ?? 0;
+        if ($editMode && mwddns_rule_name_key((string)($rule['name'] ?? '')) === $nameKey) {
+            --$matches;
+        }
+        if ($matches > 0) {
+            $errors[] = mwddns_t('Rule name already exists. Choose a different name.');
+        }
     }
     if (!preg_match('/^([a-zA-Z0-9\-]+\.)+[a-zA-Z]{2,}$/', $hostname)) {
         $errors[] = mwddns_t('Hostname must be a valid fully-qualified domain name.');
@@ -198,8 +236,9 @@ include('head.inc');
 ?>
 <body>
 <?php include('fbegin.inc'); ?>
+<?= mwddns_gui_styles() ?>
 
-<section class="page-content-main">
+<section class="page-content-main mwddns-page">
 <div class="container-fluid">
 <div class="row">
 <section class="col-xs-12">
@@ -211,6 +250,12 @@ include('head.inc');
         <li><?= htmlspecialchars($err) ?></li>
         <?php endforeach; ?>
     </ul>
+</div>
+<?php endif; ?>
+
+<?php if ($copyMode): ?>
+<div class="alert alert-info" role="status">
+    <?= htmlspecialchars(mwddns_t('This is an unsaved copy. Choose a different rule name. Saving creates the rule and starts a DNS update; cancelling or leaving discards the copy.'), ENT_QUOTES, 'UTF-8') ?>
 </div>
 <?php endif; ?>
 
@@ -257,7 +302,9 @@ include('head.inc');
                     <input type="text" class="form-control" id="name" name="name"
                            value="<?= htmlspecialchars($name) ?>"
                            placeholder="<?= mwddns_t('e.g. Home WAN DDNS') ?>" required>
-                    <span class="help-block"><?= mwddns_t('A descriptive label for this rule.') ?></span>
+                    <span class="help-block"><?= mwddns_t('A descriptive label for this rule.') ?><br>
+                        <?= htmlspecialchars(mwddns_t('Rule names must be unique. Leading/trailing spaces and ASCII letter case are ignored.'), ENT_QUOTES, 'UTF-8') ?>
+                    </span>
                 </div>
             </div>
 

@@ -158,6 +158,79 @@ function mwddns_debug_write(string $path, array $data): void
     }
 }
 
+/** Fixed labels also define the export allowlist. Never export exception text. */
+function mwddns_debug_diagnostic_labels(): array
+{
+    return [
+        'stage' => [
+            'unknown' => 'Not reported', 'starting' => 'Starting collector',
+            'snapshot' => 'Reading runtime snapshot', 'privacy_setup' => 'Preparing privacy filters',
+            'source_order' => 'Ordering log sources', 'enumerate' => 'Finding log rotations',
+            'open_file' => 'Opening log rotation', 'read_record' => 'Reading log record',
+            'parse_timestamp' => 'Parsing record timestamp', 'classify_event' => 'Classifying event',
+            'group_event' => 'Grouping event', 'source_summary' => 'Summarizing source',
+            'allocate' => 'Allocating report groups', 'report_limit' => 'Applying report size limit',
+            'write_report' => 'Writing report', 'complete' => 'Collection complete',
+        ],
+        'error_code' => [
+            'NONE' => 'No collection failure recorded.',
+            'WALL_TIME_LIMIT' => 'Worker wall-clock deadline reached.',
+            'CPU_TIME_LIMIT' => 'Worker CPU limit reached.',
+            'MEMORY_ALLOCATION_FAILED' => 'Worker memory allocation failed.',
+            'SNAPSHOT_TIMEOUT' => 'Runtime snapshot timed out.',
+            'SNAPSHOT_FAILED' => 'Runtime snapshot failed.',
+            'PROGRESS_WRITE_FAILED' => 'Progress checkpoint could not be written.',
+            'IO_FAILED' => 'Collector input or output failed.',
+            'INVALID_INPUT' => 'Collector input or report data was invalid.',
+            'COLLECTOR_EXCEPTION' => 'Collector encountered an unexpected exception.',
+            'START_FAILED' => 'Collector launcher failed.',
+            'WORKER_STATUS_STALE' => 'No final worker status received; the cause is unconfirmed.',
+            'UNKNOWN_FAILURE' => 'Failure reason was not recorded.',
+        ],
+    ];
+}
+
+function mwddns_debug_diagnostics(array $status): array
+{
+    $raw = is_array($status['diagnostics'] ?? null) ? $status['diagnostics'] : [];
+    $labels = mwddns_debug_diagnostic_labels();
+    $safe = [];
+    foreach (['stage' => 'unknown', 'error_code' => 'NONE'] as $key => $fallback) {
+        $value = $raw[$key] ?? null;
+        $safe[$key] = is_string($value) && isset($labels[$key][$value]) ? $value : $fallback;
+    }
+    $source = $raw['source'] ?? null;
+    $safe['source'] = is_string($source) &&
+        in_array($source, ['none', 'system', 'dhcp', 'gateways', 'ppp', 'routing', 'php', 'nginx'], true)
+        ? $source : 'none';
+    foreach (['elapsed_seconds', 'cpu_seconds'] as $key) {
+        $value = $raw[$key] ?? null;
+        if ((is_int($value) || is_float($value)) && is_finite((float)$value) &&
+            $value >= 0 && $value <= 86400) {
+            $safe[$key] = (float)$value;
+        }
+    }
+    foreach ([
+        'checkpoint_at' => 4102444800, 'file_index' => 24, 'record_index' => 10000000,
+        'record_bytes' => 16385, 'record_epoch' => 4102444800,
+        'source_bytes_scanned' => 67108864, 'matched_events' => 100000000,
+        'candidate_event_groups' => 5000, 'requested_days' => 14, 'collector_line' => 1000000,
+        'total_sources' => 7, 'total_files_scanned' => 168, 'total_bytes_scanned' => 67108864,
+        'total_matched_events' => 100000000, 'total_retained_events' => 100000000,
+        'total_dropped_events' => 100000000, 'total_event_groups' => 5000,
+    ] as $key => $maximum) {
+        $value = $raw[$key] ?? null;
+        if (is_int($value) && $value >= 0 && $value <= $maximum &&
+            ($key !== 'requested_days' || $value >= 1)) {
+            $safe[$key] = $value;
+        }
+    }
+    foreach (['network', 'web', 'runtime'] as $key) {
+        if (is_bool($raw[$key] ?? null)) { $safe[$key] = $raw[$key]; }
+    }
+    return $safe;
+}
+
 function mwddns_debug_status(string $id): array
 {
     $status = mwddns_debug_json(mwddns_debug_path($id) . '/status.json');
@@ -165,29 +238,126 @@ function mwddns_debug_status(string $id): array
     if (!in_array($state, ['queued', 'running', 'complete', 'failed'], true)) {
         $state = 'missing';
     }
-    $started = (int)($status['started'] ?? 0);
+    $recorded = $state;
+    $started = is_int($status['started'] ?? null) && $status['started'] > 0 &&
+        $status['started'] <= 4102444800 ? $status['started'] : 0;
+    $diagnostics = mwddns_debug_diagnostics($status);
+    if ($state === 'failed' && $diagnostics['error_code'] === 'NONE') {
+        $diagnostics['error_code'] = 'UNKNOWN_FAILURE';
+    }
     if ($started > 0 && time() - $started >= 86400) {
         $state = 'expired';
     } elseif (in_array($state, ['queued', 'running'], true) && time() - $started > 120) {
+        // A missing final write does not prove timeout, OOM or worker exit.
         $state = 'failed';
+        $diagnostics['error_code'] = 'WORKER_STATUS_STALE';
     }
-    return ['state' => $state, 'started' => $started,
-        'partial' => is_bool($status['partial'] ?? null) ? $status['partial'] : null];
+    $version = $status['collector_version'] ?? null;
+    return [
+        'state' => $state, 'recorded_state' => $recorded, 'started' => $started,
+        'failure_confirmed' => $recorded === 'failed',
+        'collector_version' => is_string($version) &&
+            preg_match('/^[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}$/D', $version) ? $version : null,
+        'partial' => is_bool($status['partial'] ?? null) ? $status['partial'] : null,
+        'diagnostics' => $diagnostics,
+    ];
+}
+
+/** Rebuild a small export from allowlisted metadata, including legacy failures. */
+function mwddns_debug_diagnostic_report(string $id): array
+{
+    $status = mwddns_debug_status($id);
+    if (!in_array($status['state'], ['complete', 'failed'], true)) {
+        throw new RuntimeException('Debug report is unavailable or expired.');
+    }
+    return [
+        'schema' => 'mwddns-debug-job-v1',
+        'generated_at' => date(DATE_ATOM),
+        'started_at' => $status['started'] > 0 ? date(DATE_ATOM, $status['started']) : null,
+        'collector_version' => $status['collector_version'],
+        'state' => $status['state'], 'recorded_state' => $status['recorded_state'],
+        'failure_confirmed' => $status['failure_confirmed'],
+        'diagnostics' => $status['diagnostics'],
+        'limits' => ['worker_wall_seconds' => 75, 'cpu_soft_seconds' => 60,
+            'cpu_hard_seconds' => 65, 'memory_bytes' => 268435456,
+            'scan_wall_seconds' => 60, 'scan_cpu_seconds' => 50],
+        'privacy' => ['mode' => 'strict_structured', 'raw_messages_included' => false,
+            'configuration_included' => false, 'exception_text_included' => false],
+        'limitations' => [
+            'Measurements describe the last recorded checkpoint, not the time since the page was opened.',
+            'A stale checkpoint does not establish why a worker stopped or whether it has exited.',
+            'The last stage, source, record timestamp and counters narrow investigation; they do not establish a root cause.',
+            'File and record indexes are scan positions, not exported filenames or physical log line numbers.',
+            'Older jobs may have no diagnostic measurements. No private message or traceback is exported.',
+        ],
+    ];
+}
+
+/** A stale GUI state must not permit removal or overlap with a live worker. */
+function mwddns_debug_worker_busy(string $id): bool
+{
+    $path = mwddns_debug_path($id) . '/worker.lock';
+    if (is_link($path)) { return true; }
+    if (!file_exists($path)) { return false; }
+    if (!is_file($path)) { return true; }
+    $handle = @fopen($path, 'r');
+    if ($handle === false) { return true; }
+    try {
+        if (!flock($handle, LOCK_EX | LOCK_NB)) { return true; }
+        flock($handle, LOCK_UN);
+        return false;
+    } finally {
+        fclose($handle);
+    }
+}
+
+/** List metadata only; opening the page must not collect or decode full reports. */
+function mwddns_debug_jobs(): array
+{
+    if (is_link(MWDDNS_DNS_CACHE_DIR) || is_link(MWDDNS_DEBUG_DIR)) { return []; }
+    $jobs = [];
+    foreach (glob(MWDDNS_DEBUG_DIR . '/job-*', GLOB_ONLYDIR) ?: [] as $path) {
+        $id = substr(basename($path), 4);
+        if (is_link($path) || !preg_match('/^[a-f0-9]{32}$/D', $id)) { continue; }
+        try { $jobs[$id] = mwddns_debug_status($id); }
+        catch (Throwable $ignored) { continue; }
+    }
+    uasort($jobs, static fn(array $a, array $b): int => $b['started'] <=> $a['started']);
+    return $jobs;
 }
 
 function mwddns_debug_remove(string $id): void
 {
     $path = mwddns_debug_path($id);
+    if (!is_dir($path)) { return; }
     if (in_array(mwddns_debug_status($id)['state'], ['queued', 'running'], true)) {
         throw new RuntimeException('Debug collection is already running.');
     }
-    foreach (['request.json', 'status.json', 'report.json',
-        'request.json.tmp', 'status.json.tmp', 'report.json.tmp'] as $name) {
-        if (is_file($path . '/' . $name) || is_link($path . '/' . $name)) {
-            @unlink($path . '/' . $name);
-        }
+    $lockPath = $path . '/worker.lock';
+    if (is_link($lockPath) || (file_exists($lockPath) && !is_file($lockPath))) {
+        throw new RuntimeException('Debug storage is unavailable.');
     }
-    @rmdir($path);
+    $old = umask(0077);
+    try { $lock = @fopen($lockPath, 'c'); }
+    finally { umask($old); }
+    if ($lock === false) {
+        throw new RuntimeException('Debug storage is unavailable.');
+    }
+    try {
+        if (!flock($lock, LOCK_EX | LOCK_NB) ||
+            in_array(mwddns_debug_status($id)['state'], ['queued', 'running'], true)) {
+            throw new RuntimeException('Debug collection is already running.');
+        }
+        foreach (['request.json', 'status.json', 'report.json',
+            'request.json.tmp', 'status.json.tmp', 'report.json.tmp', 'worker.lock'] as $name) {
+            if (is_file($path . '/' . $name) || is_link($path . '/' . $name)) {
+                @unlink($path . '/' . $name);
+            }
+        }
+        @rmdir($path);
+    } finally {
+        fclose($lock);
+    }
 }
 
 function mwddns_debug_start(array $settings): string
@@ -211,7 +381,8 @@ function mwddns_debug_start(array $settings): string
                 continue;
             }
             $status = mwddns_debug_status($id);
-            if (in_array($status['state'], ['queued', 'running'], true)) {
+            if (in_array($status['state'], ['queued', 'running'], true) ||
+                mwddns_debug_worker_busy($id)) {
                 throw new RuntimeException('Debug collection is already running.');
             }
             if ($status['state'] === 'expired' || $status['state'] === 'missing') {
@@ -244,7 +415,11 @@ function mwddns_debug_start(array $settings): string
             2 => ['file', '/dev/null', 'w'],
         ], $pipes);
         if (!is_resource($process) || proc_close($process) !== 0) {
-            mwddns_debug_write($path . '/status.json', ['state' => 'failed', 'started' => $started]);
+            mwddns_debug_write($path . '/status.json', [
+                'state' => 'failed', 'started' => $started,
+                'diagnostics' => ['stage' => 'starting', 'source' => 'none',
+                    'error_code' => 'START_FAILED', 'checkpoint_at' => time()],
+            ]);
             throw new RuntimeException('Debug collector could not be started.');
         }
         return $id;
@@ -292,6 +467,30 @@ function mwddns_debug_summary(string $json): array
         'REQUESTED_START_NOT_OBSERVED', 'NO_RECORDS_IN_REQUESTED_WINDOW',
         'SOME_LINES_HAVE_NO_PARSED_TIMESTAMP', 'EMPTY_LOG',
     ]);
+    $warningLabels = [
+        'ROTATION_FILE_LIMIT' => 'Rotation file count limit reached.',
+        'SOURCE_BYTE_LIMIT' => 'Source read-byte limit reached.',
+        'SOURCE_TIME_LIMIT' => 'Allocated scan time exhausted; some records may be unread.',
+        'FILE_HEAD_SKIPPED' => 'The beginning of a large log file was skipped.',
+        'OVERLONG_RECORD_SKIPPED' => 'An overlong log record was skipped.',
+        'TRUNCATED_RECORD_SKIPPED' => 'A partial log record was skipped.',
+        'FILE_READ_LIMIT' => 'Per-file read limit reached.',
+        'SOURCE_EVENT_LIMIT' => 'Candidate group capacity reached; some scanned events were dropped.',
+        'SHARED_EVENT_LIMIT' => 'Shared output group limit reached.',
+        'REPORT_SIZE_LIMIT' => 'Report size limit reached.',
+        'DHCP_HISTOGRAM_BUCKET_LIMIT' => 'DHCP histogram bucket limit reached.',
+        'LOG_UNAVAILABLE' => 'Log files were unavailable.',
+        'ZSTD_ROTATION_NOT_SUPPORTED' => 'Zstandard log rotations are not supported.',
+        'FILE_UNREADABLE_OR_INVALID' => 'A log file could not be read or decoded.',
+        'REQUESTED_START_NOT_OBSERVED' => 'Requested start was not observed; retention or scan limits may be responsible.',
+        'NO_RECORDS_IN_REQUESTED_WINDOW' => 'No records were observed in the requested window.',
+        'SOME_LINES_HAVE_NO_PARSED_TIMESTAMP' => 'Some log timestamps could not be parsed.',
+        'EMPTY_LOG' => 'The log was empty.',
+    ];
+    $seconds = static function ($value): ?float {
+        return (is_int($value) || is_float($value)) && is_finite((float)$value) &&
+            $value >= 0 && $value <= 75 ? (float)$value : null;
+    };
     $timestamp = static function ($value): string {
         return is_string($value) && preg_match(
             '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})$/D', $value)
@@ -314,18 +513,32 @@ function mwddns_debug_summary(string $json): array
             }
         }
         $coverage = is_string($source['coverage'] ?? null) ? $source['coverage'] : '';
+        $budget = is_array($source['budget'] ?? null) ? $source['budget'] : [];
         $rows[$source['source']] = [
             'source' => $source['source'],
             'coverage' => $coverageLabels[$coverage] ?? 'Coverage unavailable',
-            'oldest' => $timestamp($source['oldest_timestamp_seen'] ?? null),
-            'newest' => $timestamp($source['newest_timestamp_seen'] ?? null),
+            'oldest' => $timestamp(array_key_exists('oldest_timestamp_in_window', $source)
+                ? $source['oldest_timestamp_in_window'] : ($source['oldest_timestamp_seen'] ?? null)),
+            'newest' => $timestamp(array_key_exists('newest_timestamp_in_window', $source)
+                ? $source['newest_timestamp_in_window'] : ($source['newest_timestamp_seen'] ?? null)),
             'matched' => $count($source['matched_events'] ?? null),
             'retained' => $count($source['selected_events'] ?? null),
             'dropped' => $count($source['dropped_events'] ?? null),
             'groups' => $count($source['exported_event_groups'] ?? null),
+            'candidate_limit' => $count($budget['events'] ?? null),
+            'seconds_used' => $seconds($source['elapsed_seconds'] ?? null),
+            'seconds_allocated' => $seconds($budget['seconds'] ?? null),
+            'candidate_dropped' => $count($source['candidate_dropped_events'] ?? null),
+            'allocation_dropped' => $count($source['allocation_dropped_events'] ?? null),
+            'size_dropped' => $count($source['report_size_dropped_events'] ?? null),
+            'drop_stages_available' => isset($source['candidate_dropped_events'],
+                $source['allocation_dropped_events'], $source['report_size_dropped_events']),
             'limited' => (bool)array_intersect($limitWarnings, $warnings) ||
                 $count($source['dropped_events'] ?? null) > 0,
             'warnings' => array_values($warnings),
+            'warning_labels' => array_map(static function (string $warning) use ($warningLabels): string {
+                return $warningLabels[$warning];
+            }, array_values($warnings)),
         ];
     }
     return array_values($rows);

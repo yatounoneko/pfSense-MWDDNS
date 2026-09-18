@@ -6,6 +6,7 @@ Unrecognized event details are deliberately omitted, not guessed to be safe.
 """
 import bz2
 import datetime as dt
+import fcntl
 import gzip
 import heapq
 import ipaddress
@@ -23,6 +24,9 @@ import sys
 import time
 from urllib.parse import quote
 
+# Legacy upgrade validators require one literal collector_version declaration.
+COLLECTOR_METADATA = {"collector_version": "1.1.0"}
+
 BASE = Path("/var/run/mwddns/debug")
 MAX_FILE = 8 * 1024 * 1024
 MAX_TOTAL = 64 * 1024 * 1024
@@ -34,6 +38,8 @@ DHCP_BUCKET_SECONDS = 300
 MAX_DHCP_BUCKETS = 14 * 86400 // DHCP_BUCKET_SECONDS + 1
 MAX_LINE = 16384
 SOURCE_SECONDS = 6
+SCAN_WALL_SECONDS = 60
+SCAN_CPU_SECONDS = 50
 AGGREGATION_SECONDS = 3600
 MONTHS = {name: index + 1 for index, name in enumerate(
     ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -95,6 +101,23 @@ EVENT_PATTERNS = {
     "WORKER_LIMIT": r"max_children|server reached",
 }
 EVENT_PATTERNS = {key: re.compile(value, re.I) for key, value in EVENT_PATTERNS.items()}
+WEB_REASON_PATTERNS = {
+    "CONNECTION_REFUSED": r"\bconnection refused\b",
+    "CONNECTION_RESET": r"\bconnection reset by peer\b",
+    "TIMEOUT": r"\btimed out\b",
+    "NOT_FOUND": r"\bno such file or directory\b",
+    "PERMISSION_DENIED": r"\bpermission denied\b",
+    "RESOURCE_UNAVAILABLE": r"\bresource temporarily unavailable\b",
+    "NO_BUFFER_SPACE": r"\bno buffer space available\b",
+    "TOO_MANY_OPEN_FILES": r"\btoo many open files\b",
+    "ADDRESS_IN_USE": r"\baddress already in use\b",
+    "PREMATURE_CLOSE": r"\b(?:upstream prematurely closed|prematurely closed connection)\b",
+    "INVALID_HEADER": r"\bupstream sent (?:an? )?invalid header\b",
+    "NO_LIVE_UPSTREAMS": r"\bno live upstreams\b",
+    "WORKER_LIMIT": r"\bserver reached\s+pm\.max_children\b",
+    "MEMORY_EXHAUSTED": r"\bout of memory\b|\bcannot allocate memory\b",
+}
+WEB_REASON_PATTERNS = {key: re.compile(value, re.I) for key, value in WEB_REASON_PATTERNS.items()}
 SENSITIVE = re.compile(
     r"authorization|cookie|token|password|passwd|secret|credential|private.?key|"
     r"api.?key|access.?key|PHPSESSID|session.?id|\bbearer\b|"
@@ -128,6 +151,107 @@ def atomic(path, value):
         handle.write("\n")
     os.chmod(temporary, 0o600)
     os.replace(temporary, path)
+
+
+class CollectionDeadline(Exception):
+    """Not an OSError: a job deadline must escape per-file I/O recovery."""
+    def __init__(self, code):
+        super().__init__(code)
+        self.code = code
+
+
+class ProgressWriteError(Exception):
+    pass
+
+
+class JobProgress:
+    """Only fixed identifiers, counters and timestamps reach status.json."""
+    def __init__(self, job, started):
+        self.job = job
+        self.started = started
+        self.wall_started = time.monotonic()
+        self.cpu_started = time.process_time()
+        self.next_write = 0.0
+        self.reserve = bytearray(65536)
+        self.data = {"stage": "starting", "source": "none", "error_code": "NONE"}
+
+    def mark(self, stage, source=None, force=False, **details):
+        self.data["stage"] = stage
+        if source is not None and source != self.data["source"]:
+            self.data.update(source=source, file_index=0, record_index=0,
+                             record_bytes=0, record_epoch=0, source_bytes_scanned=0,
+                             matched_events=0, candidate_event_groups=0)
+        self.data.update(details)
+        if force or time.monotonic() >= self.next_write:
+            self.emit("running")
+
+    def completed_totals(self, report):
+        sources = report["sources"]
+        self.data.update(
+            total_sources=len(sources),
+            total_files_scanned=sum(row["files_scanned"] for row in sources),
+            total_bytes_scanned=sum(row["bytes_scanned"] for row in sources),
+            total_matched_events=sum(row["matched_events"] for row in sources),
+            total_retained_events=sum(row["selected_events"] for row in sources),
+            total_dropped_events=sum(row["dropped_events"] for row in sources),
+            total_event_groups=len(report["events"]))
+
+    def measurements(self):
+        return dict(self.data, elapsed_seconds=round(time.monotonic() - self.wall_started, 3),
+                    cpu_seconds=round(time.process_time() - self.cpu_started, 3),
+                    checkpoint_at=int(time.time()))
+
+    def emit(self, state, partial=None):
+        value = {"state": state, "started": self.started,
+                 **COLLECTOR_METADATA, "diagnostics": self.measurements()}
+        if isinstance(partial, bool):
+            value["partial"] = partial
+        try:
+            atomic(self.job / "status.json", value)
+        except (OSError, ValueError) as error:
+            raise ProgressWriteError() from error
+        self.next_write = time.monotonic() + 2.0
+
+    def finish(self, state, error_code="NONE", collector_line=0, partial=None):
+        self.reserve = None
+        self.data.update(error_code=error_code, collector_line=collector_line)
+        if state == "complete":
+            self.data["stage"] = "complete"
+            # Per-source progress is not a collection total after scanning ends.
+            for key in ("file_index", "record_index", "record_bytes", "record_epoch",
+                        "source_bytes_scanned", "matched_events", "candidate_event_groups",
+                        "collector_line"):
+                self.data.pop(key, None)
+        self.emit(state, partial)
+
+
+def failure_code(error):
+    if isinstance(error, CollectionDeadline):
+        return error.code
+    if isinstance(error, MemoryError):
+        return "MEMORY_ALLOCATION_FAILED"
+    if isinstance(error, subprocess.TimeoutExpired):
+        return "SNAPSHOT_TIMEOUT"
+    if isinstance(error, subprocess.CalledProcessError):
+        return "SNAPSHOT_FAILED"
+    if isinstance(error, ProgressWriteError):
+        return "PROGRESS_WRITE_FAILED"
+    if isinstance(error, OSError):
+        return "IO_FAILED"
+    if isinstance(error, (ValueError, OverflowError)):
+        return "INVALID_INPUT"
+    return "COLLECTOR_EXCEPTION"
+
+
+def collector_error_line(error):
+    line = 0
+    trace = error.__traceback__
+    while trace is not None:
+        code = trace.tb_frame.f_code
+        if code.co_filename == __file__ and code.co_name not in {"wall_expired", "cpu_expired"}:
+            line = trace.tb_lineno
+        trace = trace.tb_next
+    return line
 
 
 def small_file(path, limit):
@@ -287,7 +411,24 @@ class Privacy:
             event["events"] = ["SENSITIVE_LINE_OMITTED"]
             return event
         events = [key for key, pattern in EVENT_PATTERNS.items() if pattern.search(payload)]
-        event["events"] = events or ["UNCLASSIFIED_DETAILS_OMITTED"]
+        web = web_details(payload, source)
+        if web:
+            event["web"] = web
+            if web.get("http_status", 0) >= 500:
+                events.append("HTTP_5XX")
+            if web.get("upstream_context") and ("reason" in web or "socket_errno" in web):
+                events.append("UPSTREAM_ERROR")
+            if "operation" in web and ("reason" in web or "socket_errno" in web):
+                events.append("SOCKET_ERROR")
+            reason_event = {
+                "TIMEOUT": "TIMEOUT", "PERMISSION_DENIED": "PERMISSION_DENIED",
+                "WORKER_LIMIT": "WORKER_LIMIT", "MEMORY_EXHAUSTED": "MEMORY_ERROR",
+            }.get(web.get("reason"))
+            if reason_event:
+                events.append(reason_event)
+            if "lifecycle" in web:
+                events.append("PHP_FPM_" + web["lifecycle"])
+        event["events"] = list(dict.fromkeys(events)) or ["UNCLASSIFIED_DETAILS_OMITTED"]
         event["ips"] = sorted({tag for pattern in (V4, V6) for match in pattern.finditer(payload)
                                if (tag := self.ip(match[0]))})
         event["macs"] = sorted({self.alias("MAC", match[0].lower()) for match in MAC.finditer(payload)})
@@ -310,6 +451,9 @@ class Privacy:
         if process:
             event["process"] = enum(process[1], PROCESSES, "OTHER")
             event["pid"] = int(process[2])
+        if "worker_pid" in web:
+            event.setdefault("process", "nginx")
+            event.setdefault("pid", web["worker_pid"])
         for severity in ("emerg", "alert", "crit", "error", "warning", "notice", "info", "debug"):
             if re.search(r"\b" + severity + r"\b", payload, re.I):
                 event["severity"] = severity
@@ -334,12 +478,110 @@ class Privacy:
             match = re.search(pattern, payload, re.I)
             if match and (value := number(match[1], maximum)) is not None:
                 metrics[field] = value
+        for field in ("http_status", "socket_errno"):
+            if field in web:
+                metrics[field] = web[field]
         if metrics:
             event["metrics"] = metrics
         states = sorted(set(re.findall(r"\b(online|down|unknown)\b", payload, re.I)))
         if states:
             event["mentioned_states"] = [state.lower() for state in states]
         return event
+
+
+def web_details(payload, source):
+    """Fixed classifications and bounded numbers only, never messages or endpoints."""
+    if source not in {"nginx", "php", "system"}:
+        return {}
+    # Do not diagnose text supplied in a logged URL, Host, Referer or request.
+    head = re.split(r",\s*(?:client|server|request|host|referrer):",
+                    payload, maxsplit=1, flags=re.I)[0]
+    fpm = source != "nginx" and bool(re.search(
+        r"\bphp-fpm\b|\bfpm is running\b", head, re.I))
+    if source != "nginx" and not fpm:
+        return {}
+    result = {}
+    if source == "nginx":
+        # nginx combined: "$request" $status $body_bytes_sent. Read only status,
+        # never export the request, referrer, user-agent or response body length.
+        access = re.search(
+            r'"[^"\r\n]*\sHTTP/\d(?:\.\d+)?"\s+([1-5]\d{2})\s+(?:\d+|-)(?=\s|$)',
+            payload)
+        if access:
+            return {"log_kind": "access", "http_status": int(access[1])}
+        if not re.search(
+                r"\[(?:emerg|alert|crit|error|warn|notice|info|debug)\]|"
+                r"\b(?:connect|bind|accept|send|recv|read|write|sendto|recvfrom)\(\)|\bupstream\b",
+                head, re.I):
+            return {}
+        result["log_kind"] = "error"
+        worker = re.search(r"\[(?:emerg|alert|crit|error|warn|notice|info|debug)\]\s+"
+                           r"(\d{1,8})#(\d{1,12}):(?:\s+\*(\d{1,12}))?", head, re.I)
+        if worker:
+            result["worker_pid"] = int(worker[1])
+            if worker[3] is not None:
+                result["connection_id"] = int(worker[3])
+        upstream = re.search(r',\s*upstream:\s*"([^"\r\n]{1,2048})"', payload, re.I)
+        endpoint = upstream[1] if upstream else ""
+        if not endpoint:
+            unix = re.search(r"\bunix:([^\s,\"]{1,2048})", head, re.I)
+            endpoint = "unix:" + unix[1] if unix else ""
+        if endpoint:
+            if "unix:" in endpoint.lower():
+                result["transport"] = "unix"
+            elif re.match(r"(?:https?|fastcgi)://", endpoint, re.I):
+                result["transport"] = "tcp"
+            if re.search(r"/php[-_]fpm(?:\.sock(?:et)?)?(?=[:/?#]|$)", endpoint, re.I):
+                result["backend"] = "php_fpm"
+            elif endpoint.lower().startswith("fastcgi://"):
+                result["backend"] = "fastcgi"
+            elif re.match(r"https?://", endpoint, re.I):
+                result["backend"] = "http"
+        phases = {
+            "CONNECT": r"while connecting to upstream",
+            "READ_HEADER": r"while reading response header from upstream",
+            "READ_RESPONSE": r"while reading upstream",
+            "SEND_REQUEST": r"while sending request to upstream",
+            "TLS_HANDSHAKE": r"while SSL handshaking to upstream",
+        }
+        for code, pattern in phases.items():
+            if re.search(pattern, head, re.I):
+                result["phase"] = code
+                break
+        if upstream or re.search(r"\bupstream\b", head, re.I):
+            result["upstream_context"] = True
+    else:
+        result["log_kind"] = "php_fpm"
+        lifecycle = {
+            "READY": r"\bready to handle connections\b",
+            "STARTED": r"\bfpm is running\b",
+            "RELOADING": r"\breloading(?: in progress|:)",
+            "CHILD_EXIT": r"\bchild\s+\d+\s+exited\b",
+            "STOPPING": r"\bterminating\b|\bexiting, bye-bye\b|\bshutting down\b",
+        }
+        for code, pattern in lifecycle.items():
+            if re.search(pattern, head, re.I):
+                result["lifecycle"] = code
+                break
+        children = re.search(r"\bserver reached\s+pm\.max_children\s+setting\s*\((\d{1,6})\)", head, re.I)
+        if children:
+            result["max_children"] = int(children[1])
+    operation = re.search(
+        r"\b(connect|bind|accept|send|recv|read|write|sendto|recvfrom|writev|readv)\(\)", head, re.I)
+    if operation:
+        result["operation"] = operation[1].upper()
+    # Match reported OS errors; never translate Linux/FreeBSD errno numbers into
+    # guessed causes. The fixed reason is matched independently from the text.
+    error = re.search(r"\b(?:failed|timed out)\s*\((\d{1,4}):", head, re.I)
+    if not error:
+        error = re.search(r"\b(?:sendto error|errno)\s*[:=]?\s*(\d{1,4})\b", head, re.I)
+    if error and 0 <= int(error[1]) <= 4096:
+        result["socket_errno"] = int(error[1])
+    for code, pattern in WEB_REASON_PATTERNS.items():
+        if pattern.search(head):
+            result["reason"] = code
+            break
+    return result
 
 
 def runtime_snapshot(context, privacy, enabled):
@@ -673,17 +915,16 @@ class DHCPRequestHistogram:
 
 
 def allocate_sources(report):
-    """Allocate only after all sources have scanned, so order cannot starve one.
+    """Share final slots fairly after every source has had its scan reservation.
 
-    The extra candidate buffer is bounded to seven sources * 2000 groups.
-    Byte/time/process limits are unchanged. Unused guarantees and shared slots
-    are distributed equally among sources that can still use them.
+    Candidate borrowing is bounded separately by the collection-wide pool.
+    Unused guarantees and shared output slots go to sources that can use them.
     """
     grouped = {row["source"]: [] for row in report["sources"]}
     for event in report["events"]:
         grouped[event["source"]].append(event)
     floor = min(MIN_SOURCE_EVENTS, MAX_EVENTS // max(1, len(grouped)))
-    capacities = {name: min(len(rows), MAX_SOURCE_EVENTS) for name, rows in grouped.items()}
+    capacities = {name: min(len(rows), MAX_EVENTS) for name, rows in grouped.items()}
     allocations = {name: min(count, floor) for name, count in capacities.items()}
     spare = MAX_EVENTS - sum(allocations.values())
     while spare:
@@ -711,8 +952,8 @@ def allocate_sources(report):
     report["events"] = retained
 
 
-def scan(source, base, settings, privacy, report, quota, now, cutoff):
-    candidate_limit = min(MAX_SOURCE_EVENTS, quota["events"])
+def scan(source, base, settings, privacy, report, quota, now, cutoff, *, cpu_deadline=None, progress=None):
+    candidate_limit = min(MAX_EVENTS, quota["events"])
     histogram = DHCPRequestHistogram()
     summary = {
         "source": source, "files_scanned": 0, "bytes_scanned": 0,
@@ -732,10 +973,18 @@ def scan(source, base, settings, privacy, report, quota, now, cutoff):
         "dropped_by_event_code": {}, "dhcp_request_histogram": histogram.export(),
         "coverage": "unavailable", "timestamped_lines_in_window": 0,
         "warnings": [], "oldest_timestamp_seen": None, "newest_timestamp_seen": None,
+        "oldest_timestamp_in_window": None, "newest_timestamp_in_window": None,
     }
     report["sources"].append(summary)
     deadline = time.monotonic() + quota["seconds"]
+
+    def time_left():
+        return (time.monotonic() < deadline and
+                (cpu_deadline is None or time.process_time() < cpu_deadline))
+
     buffer = EventBuffer(candidate_limit)
+    if progress:
+        progress.mark("enumerate", source=source, force=True)
     try:
         paths = candidates(base)
     except OSError:
@@ -747,17 +996,23 @@ def scan(source, base, settings, privacy, report, quota, now, cutoff):
     if len(paths) > 24:
         summary["warnings"].append("ROTATION_FILE_LIMIT")
     oldest, newest = None, None
-    for path in paths[:24]:
+    window_oldest, window_newest = None, None
+    for file_index, path in enumerate(paths[:24], 1):
         if path.suffix == ".zst":
             summary["warnings"].append("ZSTD_ROTATION_NOT_SUPPORTED")
             continue
         if summary["bytes_scanned"] >= quota["bytes"]:
             summary["warnings"].append("SOURCE_BYTE_LIMIT")
             break
-        if time.monotonic() >= deadline:
+        if not time_left():
             summary["warnings"].append("SOURCE_TIME_LIMIT")
             break
         count, previous, selected = 0, None, False
+        record_index, file_matches = 0, 0
+        if progress:
+            progress.mark("open_file", force=True, file_index=file_index,
+                          record_index=0, record_bytes=0, record_epoch=0,
+                          source_bytes_scanned=summary["bytes_scanned"])
         try:
             metadata = path.stat()
             if not stat.S_ISREG(metadata.st_mode):
@@ -772,12 +1027,16 @@ def scan(source, base, settings, privacy, report, quota, now, cutoff):
                     summary["bytes_scanned"] += len(raw)
                     # If this was still inside an overlong line, the loop below
                     # discards its remainder rather than exporting a fragment.
-                    while raw and not raw.endswith(b"\n") and count < file_limit and time.monotonic() < deadline:
+                    while raw and not raw.endswith(b"\n") and count < file_limit and time_left():
                         raw = handle.readline(min(MAX_LINE, file_limit - count))
                         count += len(raw)
                         summary["bytes_scanned"] += len(raw)
                     summary["warnings"].append("FILE_HEAD_SKIPPED")
-                while count < file_limit and time.monotonic() < deadline:
+                while count < file_limit and time_left():
+                    if progress:
+                        progress.mark("read_record", source_bytes_scanned=summary["bytes_scanned"],
+                                      matched_events=summary["matched_events"],
+                                      candidate_event_groups=len(buffer.groups))
                     read_limit = min(MAX_LINE + 1, file_limit - count)
                     raw = handle.readline(read_limit)
                     if not raw:
@@ -787,12 +1046,17 @@ def scan(source, base, settings, privacy, report, quota, now, cutoff):
                     if not raw.endswith(b"\n") and len(raw) == read_limit:
                         summary["warnings"].append(
                             "OVERLONG_RECORD_SKIPPED" if len(raw) > MAX_LINE else "TRUNCATED_RECORD_SKIPPED")
-                        while raw and not raw.endswith(b"\n") and count < file_limit and time.monotonic() < deadline:
+                        while raw and not raw.endswith(b"\n") and count < file_limit and time_left():
                             raw = handle.readline(min(MAX_LINE, file_limit - count))
                             count += len(raw)
                             summary["bytes_scanned"] += len(raw)
                         previous, selected = None, False
                         continue
+                    record_index += 1
+                    if progress:
+                        progress.mark("parse_timestamp", record_index=record_index,
+                                      record_bytes=len(raw), record_epoch=0,
+                                      source_bytes_scanned=summary["bytes_scanned"])
                     line = raw.decode("utf-8", "replace")
                     epoch, payload = timestamp(line, metadata.st_mtime, now)
                     if epoch is None:
@@ -805,10 +1069,19 @@ def scan(source, base, settings, privacy, report, quota, now, cutoff):
                         selected = relevant(source, line, settings)
                         oldest = epoch if oldest is None else min(oldest, epoch)
                         newest = epoch if newest is None else max(newest, epoch)
-                        summary["timestamped_lines_in_window"] += cutoff <= epoch <= now
+                        if cutoff <= epoch <= now:
+                            summary["timestamped_lines_in_window"] += 1
+                            window_oldest = epoch if window_oldest is None else min(window_oldest, epoch)
+                            window_newest = epoch if window_newest is None else max(window_newest, epoch)
                     if not selected or not cutoff <= epoch <= now:
                         continue
+                    if progress:
+                        progress.mark("classify_event", force=file_matches == 0,
+                                      record_epoch=int(epoch) if 0 <= epoch <= 4102444800 else 0)
                     event = privacy.event(payload, epoch, source)
+                    file_matches += 1
+                    if progress:
+                        progress.mark("group_event")
                     summary["matched_events"] += 1
                     summary["matched_by_class"][event_class(event)] += 1
                     summary["sensitive_lines_omitted"] += "SENSITIVE_LINE_OMITTED" in event["events"]
@@ -823,10 +1096,13 @@ def scan(source, base, settings, privacy, report, quota, now, cutoff):
                     summary["warnings"].append("FILE_READ_LIMIT")
                 if summary["bytes_scanned"] >= quota["bytes"]:
                     summary["warnings"].append("SOURCE_BYTE_LIMIT")
-                if time.monotonic() >= deadline:
+                if not time_left():
                     summary["warnings"].append("SOURCE_TIME_LIMIT")
         except (OSError, EOFError, ValueError, lzma.LZMAError):
             summary["warnings"].append("FILE_UNREADABLE_OR_INVALID")
+    if progress:
+        progress.mark("source_summary", force=True, source_bytes_scanned=summary["bytes_scanned"],
+                      matched_events=summary["matched_events"], candidate_event_groups=len(buffer.groups))
     retained = buffer.events()
     report["events"].extend(retained)
     source_counts(summary, retained)
@@ -840,6 +1116,8 @@ def scan(source, base, settings, privacy, report, quota, now, cutoff):
         summary["warnings"].append("SOURCE_EVENT_LIMIT")
     summary["oldest_timestamp_seen"] = stamp(oldest) if oldest is not None else None
     summary["newest_timestamp_seen"] = stamp(newest) if newest is not None else None
+    summary["oldest_timestamp_in_window"] = stamp(window_oldest) if window_oldest is not None else None
+    summary["newest_timestamp_in_window"] = stamp(window_newest) if window_newest is not None else None
     if oldest is None or oldest > cutoff:
         summary["warnings"].append("REQUESTED_START_NOT_OBSERVED")
     if newest is not None and newest < cutoff:
@@ -896,7 +1174,21 @@ def limit_report(report):
     report["partial"] = any(source["warnings"] for source in report["sources"])
 
 
-def collect(settings, now):
+def scan_workload(base):
+    """Estimate disk work only; compression and filtering can change actual cost."""
+    try:
+        return sum(min(MAX_FILE, path.stat().st_size) for path in candidates(base)[:24]
+                   if path.suffix != ".zst")
+    except OSError:
+        # Let scan() report the unavailable source using its existing warnings.
+        return 0
+
+
+def collect(settings, now, progress=None):
+    scan_deadline = time.monotonic() + SCAN_WALL_SECONDS
+    cpu_deadline = time.process_time() + SCAN_CPU_SECONDS
+    if progress:
+        progress.mark("snapshot", source="none", force=True)
     completed = subprocess.run(
         ["/usr/local/bin/php", "/usr/local/bin/mwddns_debug_snapshot.php",
          "runtime" if settings["runtime"] else "context"],
@@ -904,12 +1196,14 @@ def collect(settings, now):
         timeout=15, check=True)
     if len(completed.stdout) > 1024 * 1024:
         raise ValueError("Context limit")
+    if progress:
+        progress.mark("privacy_setup", force=True)
     context = json.loads(completed.stdout)
     privacy = Privacy(context)
     cutoff = now - settings["days"] * 86400
     report = {
         "schema": "mwddns-debug-v2",
-        "collector_version": "1.0.12",
+        **COLLECTOR_METADATA,
         "generated_at": stamp(now),
         "window": {"days": settings["days"], "start": stamp(cutoff), "end": stamp(now)},
         "privacy": {
@@ -923,13 +1217,16 @@ def collect(settings, now):
         "limitations": [
             "Existing logs only. Missing, rotated-away or disabled logs cannot be reconstructed.",
             "Unrecognized free text is omitted. This is not a verbatim log export.",
+            "Web diagnostics retain only recognized HTTP status, reported errno, fixed operation/reason/phase/backend classes, numeric nginx worker/connection IDs and explicit PHP-FPM lifecycle messages. No request, URL, endpoint, raw error text or guessed root cause is exported.",
+            "A connection ID is scoped to nginx workers, not a unique request ID. Separate records and equal counts do not establish causality. Sensitive lines remain omitted before diagnostic extraction.",
             "Current WAN/address mapping cannot prove ownership of every historical IP.",
             "An empty WAN list means unattributed, not that every WAN was affected.",
             "Snapshot OK does not verify public DNS or historical failover.",
             "Sources are scanned newest-file first with bounded reads, not guaranteed complete.",
             "Repeated classes are grouped within one-hour buckets; occurrences and first/last times are retained, not every intermediate timestamp.",
-            "Each enabled source keeps its byte/time budgets and buffers at most 2000 candidate groups before final allocation; up to 14000 candidate groups are temporarily buffered under the unchanged process resource limits.",
-            "Final allocation guarantees up to 256 available groups per source, shares spare slots fairly, and exports at most 5000 groups total and 2000 per source. The report-byte ceiling may reduce guarantees after surplus slots are trimmed.",
+            "Smaller estimated on-disk sources scan first. Each remaining source reserves 6 scan seconds and 2000 candidate groups; completed sources release unused capacity. A source may borrow up to 5000 candidate groups, within a shared pool of max(5000, 2000 * enabled sources), at most 14000 groups.",
+            "Scanning stops within a 60-second collection wall budget and 50 collector CPU seconds, leaving headroom under the unchanged 75-second, 60-CPU-second and 256 MiB process limits. Reservations are subject to these total deadlines. Byte budgets remain independent.",
+            "Final allocation guarantees up to 256 available groups per source, shares spare slots fairly, and exports at most 5000 groups overall. The report-byte ceiling may reduce guarantees after surplus slots are trimmed.",
             "Candidate, allocation and report-size dropped-event counts are occurrences lost at each stage; their sum equals final dropped_events. Unscanned records cannot be counted.",
             "DHCP server/destination addresses do not establish WAN ownership. Current leased-address matches are explicitly labelled.",
             "DHCP script EXPIRE is not proof of timer expiry. rc.newwanip is not proof of an address change.",
@@ -943,10 +1240,15 @@ def collect(settings, now):
         ],
         "limits": {"seconds": 75, "bytes_per_file": MAX_FILE, "bytes_total": MAX_TOTAL,
                    "events": MAX_EVENTS, "report_bytes": MAX_REPORT,
-                   "seconds_per_source": SOURCE_SECONDS,
+                   "seconds_per_source": SCAN_WALL_SECONDS,
+                   "reserved_seconds_per_source": SOURCE_SECONDS,
+                   "scan_wall_seconds": SCAN_WALL_SECONDS,
+                   "scan_cpu_seconds": SCAN_CPU_SECONDS,
+                   "source_budget_mode": "shared_bounded",
                    "aggregation_bucket_seconds": AGGREGATION_SECONDS,
                    "guaranteed_groups_per_source": MIN_SOURCE_EVENTS,
-                   "candidate_groups_per_source": MAX_SOURCE_EVENTS,
+                   "candidate_groups_per_source": MAX_EVENTS,
+                   "reserved_candidate_groups_per_source": MAX_SOURCE_EVENTS,
                    "dhcp_histogram_bucket_seconds": DHCP_BUCKET_SECONDS,
                    "dhcp_histogram_buckets_per_source": MAX_DHCP_BUCKETS,
                    "pid_samples_per_group": 4},
@@ -964,14 +1266,48 @@ def collect(settings, now):
         ]
     if settings["web"]:
         sources += [("php", Path("/tmp/PHP_errors.log")), ("nginx", Path("/var/log/nginx.log"))]
-    quota = {"bytes": MAX_TOTAL // len(sources), "events": MAX_SOURCE_EVENTS,
-             "seconds": SOURCE_SECONDS}
-    report["limits"]["reserved_per_source"] = dict(quota, events=MIN_SOURCE_EVENTS)
-    report["limits"]["candidate_groups_total"] = MAX_SOURCE_EVENTS * len(sources)
-    for source, path in sources:
-        scan(source, path, settings, privacy, report, quota, now, cutoff)
+    byte_budget = MAX_TOTAL // len(sources)
+    report["limits"]["reserved_per_source"] = {
+        "bytes": byte_budget, "events": MIN_SOURCE_EVENTS, "seconds": SOURCE_SECONDS}
+    pool = max(MAX_EVENTS, MAX_SOURCE_EVENTS * len(sources))
+    report["limits"]["candidate_groups_total"] = pool
+    # Sorting is an estimate, not a coverage guarantee. Reserve capacity for
+    # every unvisited source even if an early source proves unexpectedly busy.
+    if progress:
+        progress.mark("source_order", source="none", force=True)
+    ordered = sorted(sources, key=lambda item: scan_workload(item[1]))
+    for index, (source, path) in enumerate(ordered):
+        remaining = len(ordered) - index - 1
+        available = max(0.0, min(scan_deadline - time.monotonic(),
+                                 cpu_deadline - time.process_time()))
+        seconds = min(available, max(SOURCE_SECONDS, available - remaining * SOURCE_SECONDS))
+        quota = {
+            "bytes": byte_budget,
+            "events": min(MAX_EVENTS, pool - remaining * MAX_SOURCE_EVENTS),
+            "seconds": seconds,
+        }
+        started = time.monotonic()
+        scan(source, path, settings, privacy, report, quota, now, cutoff,
+             cpu_deadline=cpu_deadline, progress=progress)
+        summary = report["sources"][-1]
+        summary["elapsed_seconds"] = round(time.monotonic() - started, 3)
+        summary["budget"]["seconds"] = round(seconds, 3)
+        summary["borrowed_seconds"] = round(max(0.0, seconds - SOURCE_SECONDS), 3)
+        summary["borrowed_candidate_groups"] = max(0, quota["events"] - MAX_SOURCE_EVENTS)
+        pool -= summary["candidate_event_groups"]
+    order = {name: index for index, (name, _) in enumerate(sources)}
+    report["sources"].sort(key=lambda row: order[row["source"]])
+    if progress:
+        progress.mark("allocate", source="none", force=True)
     allocate_sources(report)
     report["events"].sort(key=lambda event: event["time"])
+    if progress:
+        progress.mark("report_limit", force=True)
+        measured = progress.measurements()
+        report["collection"] = {
+            "elapsed_seconds_before_write": measured["elapsed_seconds"],
+            "cpu_seconds_before_write": measured["cpu_seconds"],
+        }
     limit_report(report)
     return report
 
@@ -984,41 +1320,69 @@ def main():
     if BASE.is_symlink() or job.is_symlink() or not job.is_dir():
         return 2
     started = int(time.time())
+    worker, owns_job, progress, report = None, False, None, None
     try:
+        lock_path = job / "worker.lock"
+        if lock_path.is_symlink():
+            return 2
+        worker = lock_path.open("a+b")
+        try:
+            fcntl.flock(worker, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return 2
+        owns_job = True
         state = json.loads(small_file(job / "status.json", 4096))
         started = int(state["started"])
         if state.get("state") != "queued" or not 0 <= time.time() - started < 120:
             return 2
+        progress = JobProgress(job, started)
+        progress.mark("starting", force=True)
         settings = json.loads(small_file(job / "request.json", 4096))
         if type(settings.get("days")) is not int or not 1 <= settings["days"] <= 14 or any(
                 type(settings.get(key)) is not bool for key in ("network", "web", "runtime")):
             raise ValueError("Invalid settings")
+        progress.data.update(requested_days=settings["days"], network=settings["network"],
+                             web=settings["web"], runtime=settings["runtime"])
         resource.setrlimit(resource.RLIMIT_CPU, (60, 65))
         resource.setrlimit(resource.RLIMIT_AS, (256 * 1024 * 1024, 256 * 1024 * 1024))
-        def expired(signum, frame):
-            raise TimeoutError("Deadline")
-        signal.signal(signal.SIGALRM, expired)
+        def wall_expired(signum, frame):
+            raise CollectionDeadline("WALL_TIME_LIMIT")
+        def cpu_expired(signum, frame):
+            raise CollectionDeadline("CPU_TIME_LIMIT")
+        signal.signal(signal.SIGALRM, wall_expired)
+        signal.signal(signal.SIGXCPU, cpu_expired)
         signal.alarm(75)
-        atomic(job / "status.json", {"state": "running", "started": started})
-        report = collect(settings, started)
+        report = collect(settings, started, progress)
+        progress.completed_totals(report)
+        progress.mark("write_report", source="none", force=True)
         atomic(job / "report.json", report)
-        atomic(job / "status.json", {
-            "state": "complete", "started": started, "partial": report["partial"],
-        })
+        progress.finish("complete", partial=report["partial"])
         return 0
-    except Exception:
+    except Exception as error:
+        code, line = failure_code(error), collector_error_line(error)
+        # Release collected data and exception frames before a bounded failure
+        # write. Never persist exception text, traceback, paths or private context.
+        error.__traceback__ = None
+        report = None
         try:
-            atomic(job / "status.json", {"state": "failed", "started": started})
+            if owns_job:
+                if progress is None:
+                    progress = JobProgress(job, started)
+                progress.finish("failed", code, line)
         except Exception:
+            # The last successful checkpoint still survives a failed final write.
             pass
         return 1
     finally:
         signal.alarm(0)
-        for name in ("request.json", "request.json.tmp", "report.json.tmp", "status.json.tmp"):
-            try:
-                (job / name).unlink(missing_ok=True)
-            except OSError:
-                pass
+        if owns_job:
+            for name in ("request.json", "request.json.tmp", "report.json.tmp", "status.json.tmp"):
+                try:
+                    (job / name).unlink(missing_ok=True)
+                except OSError:
+                    pass
+        if worker is not None:
+            worker.close()
 
 
 if __name__ == "__main__":

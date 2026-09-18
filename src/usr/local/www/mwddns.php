@@ -56,6 +56,10 @@ if (isset($_GET['msg'])) {
             $message = mwddns_t('Rule deleted.');
             $msgtype = 'success';
             break;
+        case 'copy_unavailable':
+            $message = mwddns_t('The source rule changed or no longer exists. Reload the rules list and copy it again.');
+            $msgtype = 'warning';
+            break;
         case 'updated':
             $message = mwddns_t('DNS records updated successfully.');
             $msgtype = 'success';
@@ -80,8 +84,9 @@ include('head.inc');
 ?>
 <body>
 <?php include('fbegin.inc'); ?>
+<?= mwddns_gui_styles() ?>
 
-<section class="page-content-main">
+<section class="page-content-main mwddns-page">
 <div class="container-fluid">
 <div class="row">
 
@@ -136,7 +141,21 @@ include('head.inc');
                         <td><?= htmlspecialchars($rule['name'] ?? '') ?></td>
 
                         <!-- Provider -->
-                        <td><span class="label label-info"><?= htmlspecialchars($provName) ?></span></td>
+                        <td>
+                            <span style="display:inline-flex;align-items:center;gap:6px;white-space:nowrap">
+                                <span class="label label-info"><?= htmlspecialchars($provName) ?></span>
+<?php if (($rule['provider'] ?? 'cloudflare') === 'cloudflare' && ($rule['proxied'] ?? '0') === '1'): ?>
+                                <span style="display:inline-flex;align-items:center;color:#F6821F"
+                                      title="<?= htmlspecialchars(mwddns_t('Cloudflare Proxy (orange cloud)'), ENT_QUOTES, 'UTF-8') ?>">
+                                    <svg aria-hidden="true" focusable="false" viewBox="0 0 64 40"
+                                         width="24" height="15" fill="currentColor" style="display:block;flex-shrink:0">
+                                        <path d="M52.5 38c-1.7 0-12.5-.1-23-.2-10.2-.1-20.8-.2-22.4-.2a6.5 6.5 0 0 1-.8-12.9c0-.15 0-.3 0-.46a7.7 7.7 0 0 1 12.1-6.33A15.8 15.8 0 0 1 49.25 21.65 8.5 8.5 0 1 1 52.5 38Z"></path>
+                                    </svg>
+                                    <span class="sr-only"><?= htmlspecialchars(mwddns_t('Cloudflare Proxy (orange cloud)'), ENT_QUOTES, 'UTF-8') ?></span>
+                                </span>
+<?php endif; ?>
+                            </span>
+                        </td>
 
                         <!-- Hostname -->
                         <td><code><?= htmlspecialchars($rule['hostname'] ?? '') ?></code></td>
@@ -197,21 +216,33 @@ include('head.inc');
 
                         <!-- Actions -->
                         <td>
-                            <a class="fa fa-pencil"
-                               title="<?= mwddns_t('Edit') ?>"
-                               href="/mwddns_edit.php?id=<?= (int)$id ?>"></a>
-                            &nbsp;
-                            <form method="post" action="/mwddns.php" style="display:inline">
-                                <?= mwddns_csrf_input() ?>
-                                <input type="hidden" name="mwddns_revision" value="<?= htmlspecialchars($formRevision) ?>">
-                                <input type="hidden" name="act" value="del">
-                                <input type="hidden" name="id" value="<?= (int)$id ?>">
-                                <button type="submit" class="fa fa-trash btn btn-link p-0"
-                                        title="<?= mwddns_t('Delete') ?>"
-                                        aria-label="<?= mwddns_t('Delete') ?>"
-                                        onclick="return confirm('<?= mwddns_t('Delete this rule?') ?>')"
-                                        style="vertical-align:baseline"></button>
-                            </form>
+                            <div class="mwddns-rule-actions">
+                                <a class="mwddns-rule-copy"
+                                   title="<?= htmlspecialchars(mwddns_t('Copy Rule'), ENT_QUOTES, 'UTF-8') ?>"
+                                   aria-label="<?= htmlspecialchars(mwddns_t('Copy Rule'), ENT_QUOTES, 'UTF-8') ?>"
+                                   href="/mwddns_edit.php?clone=<?= (int)$id ?>&amp;revision=<?= htmlspecialchars($formRevision, ENT_QUOTES, 'UTF-8') ?>">
+                                    <i class="fa-regular fa-clone" aria-hidden="true"></i>
+                                </a>
+                                <a class="mwddns-rule-edit"
+                                   title="<?= htmlspecialchars(mwddns_t('Edit'), ENT_QUOTES, 'UTF-8') ?>"
+                                   aria-label="<?= htmlspecialchars(mwddns_t('Edit'), ENT_QUOTES, 'UTF-8') ?>"
+                                   href="/mwddns_edit.php?id=<?= (int)$id ?>">
+                                    <i class="fa-solid fa-pencil" aria-hidden="true"></i>
+                                </a>
+                                <form method="post" action="/mwddns.php" class="mwddns-rule-delete-form">
+                                    <?= mwddns_csrf_input() ?>
+                                    <input type="hidden" name="mwddns_revision" value="<?= htmlspecialchars($formRevision) ?>">
+                                    <input type="hidden" name="act" value="del">
+                                    <input type="hidden" name="id" value="<?= (int)$id ?>">
+                                    <button type="submit" class="mwddns-delete-rule"
+                                            title="<?= htmlspecialchars(mwddns_t('Delete'), ENT_QUOTES, 'UTF-8') ?>"
+                                            aria-label="<?= htmlspecialchars(mwddns_t('Delete'), ENT_QUOTES, 'UTF-8') ?>"
+                                            data-confirm="<?= htmlspecialchars(mwddns_t('Delete this rule?'), ENT_QUOTES, 'UTF-8') ?>"
+                                            onclick="return window.confirm(this.getAttribute('data-confirm'))">
+                                        <i class="fa-solid fa-trash-can no-confirm" aria-hidden="true"></i>
+                                    </button>
+                                </form>
+                            </div>
                         </td>
                     </tr>
 <?php endforeach; ?>

@@ -91,6 +91,68 @@ function mwddns_upgrade_jobs(): array
     uasort($jobs, static fn(array $a, array $b): int => ($b['started'] ?? 0) <=> ($a['started'] ?? 0));
     return $jobs;
 }
+/**
+ * Called with admission.lock held. Only idle temporary jobs may be evicted.
+ * Worker ownership, not the GUI's age-based status, protects live operations.
+ */
+function mwddns_upgrade_prune_oldest(): bool
+{
+    foreach (array_reverse(mwddns_upgrade_jobs(), true) as $id => $status) {
+        if (!in_array($status['state'], ['ready', 'expired', 'complete', 'failed', 'rolled_back'], true)) {
+            continue;
+        }
+        $path = mwddns_upgrade_path($id);
+        $root = realpath($path);
+        $base = realpath(MWDDNS_UPGRADE_DIR);
+        if ($root === false || $base === false || dirname($root) !== $base ||
+            basename($root) !== 'job-' . $id || fileowner($root) !== 0 ||
+            (fileperms($root) & 0077) !== 0) {
+            continue;
+        }
+        $lockPath = $path . '/worker.lock';
+        if (is_link($lockPath) || (file_exists($lockPath) && !is_file($lockPath))) { continue; }
+        $old = umask(0077);
+        try { $lock = @fopen($lockPath, 'c'); }
+        finally { umask($old); }
+        if ($lock === false) { continue; }
+        try {
+            if (!flock($lock, LOCK_EX | LOCK_NB)) { continue; }
+            $statusPath = $path . '/status.json';
+            if (is_link($statusPath) || !is_file($statusPath) || filesize($statusPath) > 65536) { continue; }
+            $raw = json_decode((string)file_get_contents($statusPath), true);
+            if (!is_array($raw) || !in_array($raw['state'] ?? '', ['ready', 'complete', 'failed', 'rolled_back'], true)) {
+                continue;
+            }
+            // Preflight a bounded, child-first list before removing anything.
+            // Never follow links or touch /conf/mwddns-backups.
+            $entries = [];
+            $deadline = microtime(true) + 2.0;
+            $tree = new RecursiveIteratorIterator(
+                new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS),
+                RecursiveIteratorIterator::CHILD_FIRST
+            );
+            foreach ($tree as $entry) {
+                $entryPath = $entry->getPathname();
+                if (count($entries) >= 1024 || microtime(true) > $deadline ||
+                    $entry->isLink() || (!$entry->isDir() && !$entry->isFile()) ||
+                    strpos($entryPath, $root . '/') !== 0) {
+                    throw new RuntimeException('CLEANUP_FAILED');
+                }
+                $entries[] = [$entryPath, $entry->isDir()];
+            }
+            unset($tree);
+            foreach ($entries as [$entryPath, $isDirectory]) {
+                if (!($isDirectory ? @rmdir($entryPath) : @unlink($entryPath))) {
+                    throw new RuntimeException('CLEANUP_FAILED');
+                }
+            }
+            if (!@rmdir($root)) { throw new RuntimeException('CLEANUP_FAILED'); }
+            return true;
+        } finally { fclose($lock); }
+    }
+    return false;
+}
+
 function mwddns_upgrade_record_start_failure(string $action, string $path): void
 {
     if (!in_array($action, ['inspect', 'install'], true)) { return; }
@@ -147,12 +209,15 @@ function mwddns_upgrade_action(string $action, array $post, array $files): strin
     try {
         if (!flock($lock, LOCK_EX | LOCK_NB)) { throw new RuntimeException('BUSY'); }
         if ($action === 'upload') {
-            if (count(mwddns_upgrade_jobs()) >= 3) { throw new RuntimeException('JOB_LIMIT'); }
             $file = $files['package'] ?? [];
             if (!is_array($file) || ($file['error'] ?? -1) !== UPLOAD_ERR_OK ||
                 !is_string($file['tmp_name'] ?? null) || !is_uploaded_file($file['tmp_name']) ||
                 filesize($file['tmp_name']) > MWDDNS_UPGRADE_MAX_ZIP || filesize($file['tmp_name']) < 1) {
                 throw new RuntimeException('UPLOAD_FAILED');
+            }
+            // Validate the incoming upload before evicting an old temporary job.
+            while (count(mwddns_upgrade_jobs()) >= 3) {
+                if (!mwddns_upgrade_prune_oldest()) { throw new RuntimeException('JOB_LIMIT'); }
             }
             if (disk_free_space(MWDDNS_UPGRADE_DIR) < MWDDNS_UPGRADE_MAX_ZIP * 2) { throw new RuntimeException('DISK_SPACE'); }
             $id = bin2hex(random_bytes(16));

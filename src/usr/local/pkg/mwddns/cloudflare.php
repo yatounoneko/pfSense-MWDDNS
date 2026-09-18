@@ -30,7 +30,7 @@ function mwddns_cloudflare_fields(): array
             'required'    => true,
             'placeholder' => mwddns_t('Cloudflare API Token with DNS edit permission'),
             'help'        => mwddns_t('Create a token at Cloudflare Dashboard → My Profile → API Tokens with Zone → DNS → Edit permission.') .
-                             ' <strong class="text-warning">' .
+                             '<br><strong class="text-warning">' .
                              mwddns_t('Tokens are stored in plain text in pfSense\'s config.xml. Restrict the token to only the required zone and permission.') .
                              '</strong>',
         ],

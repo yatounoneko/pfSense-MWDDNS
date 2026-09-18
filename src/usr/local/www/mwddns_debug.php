@@ -18,6 +18,12 @@ function mwddns_debug_label(string $text): string
 {
     return mwddns_debug_h(mwddns_t($text));
 }
+function mwddns_debug_time(string $timestamp): string
+{
+    $escaped = mwddns_debug_h($timestamp);
+    return '<time class="mwddns-debug-timestamp" datetime="' . $escaped .
+        '" title="' . $escaped . '">' . $escaped . '</time>';
+}
 
 $error = '';
 $settings = mwddns_debug_settings();
@@ -47,7 +53,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             throw new RuntimeException('Invalid request token. Please reload the page and try again.');
         }
         $action = $_POST['action'] ?? '';
-        if (!is_string($action) || !in_array($action, ['save', 'collect', 'download', 'delete'], true)) {
+        if (!is_string($action) || !in_array($action, ['save', 'collect', 'download', 'diagnostics', 'delete'], true)) {
             throw new RuntimeException('Invalid debug settings.');
         }
         if ($action === 'save' || $action === 'collect') {
@@ -70,6 +76,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($action === 'delete') {
             mwddns_debug_remove($job);
             header('Location: /mwddns_debug.php', true, 303);
+            exit;
+        }
+        if ($action === 'diagnostics') {
+            $diagnostic = mwddns_debug_diagnostic_report($job);
+            $downloadName = 'mwddns-debug-diagnostics-' .
+                date('Y-m-d_H-i-s', strtotime($diagnostic['generated_at'])) . '.json';
+            $json = json_encode($diagnostic, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR) . "\n";
+            if (session_status() === PHP_SESSION_ACTIVE) { session_write_close(); }
+            header('Content-Type: application/json; charset=utf-8');
+            header('Content-Disposition: attachment; filename="' . $downloadName . '"');
+            header('X-Content-Type-Options: nosniff');
+            header('Cache-Control: no-store');
+            echo $json;
             exit;
         }
         $path = mwddns_debug_report_path($job);
@@ -108,6 +127,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $status = $job !== '' ? mwddns_debug_status($job) : ['state' => 'none'];
+$recentReports = mwddns_debug_jobs();
 $preview = '';
 $previewLimited = false;
 $sourceSummary = [];
@@ -128,34 +148,64 @@ if ($status['state'] === 'complete') {
 }
 $stateLabels = [
     'none' => 'No report selected.', 'queued' => 'Queued', 'running' => 'Collecting',
-    'complete' => 'Report ready', 'failed' => 'Collection failed. Retry with fewer days or sources.',
+    'complete' => 'Report ready', 'failed' => 'Collection failed. Open the diagnostics for the recorded reason.',
     'expired' => 'Report expired.', 'missing' => 'Report unavailable.',
 ];
+$diagnosticLabels = mwddns_debug_diagnostic_labels();
+$diagnosticFields = [
+    'stage' => 'Last collector stage', 'error_code' => 'Recorded failure reason',
+    'elapsed_seconds' => 'Elapsed seconds at checkpoint',
+    'cpu_seconds' => 'Collector CPU seconds at checkpoint', 'requested_days' => 'Requested days',
+];
+$sourceProgressFields = ['source', 'file_index', 'record_index', 'record_bytes',
+    'source_bytes_scanned', 'matched_events', 'candidate_event_groups'];
+$diagnosticTimes = ['checkpoint_at' => 'Last checkpoint time'];
+if ($status['state'] === 'complete') {
+    $diagnosticFields += [
+        'total_sources' => 'Sources included', 'total_files_scanned' => 'Total files scanned',
+        'total_bytes_scanned' => 'Total bytes scanned', 'total_matched_events' => 'Total matched events',
+        'total_retained_events' => 'Total retained events', 'total_dropped_events' => 'Total dropped events',
+        'total_event_groups' => 'Total event groups',
+    ];
+} else {
+    $diagnosticFields += [
+        'source' => 'Last collector source', 'file_index' => 'Rotation scan index',
+        'record_index' => 'Record scan index', 'record_bytes' => 'Last record bytes',
+        'source_bytes_scanned' => 'Source bytes scanned', 'matched_events' => 'Source matched events',
+        'candidate_event_groups' => 'Source candidate groups', 'collector_line' => 'Collector code line',
+    ];
+    $diagnosticTimes['record_epoch'] = 'Last record timestamp';
+}
+$diagnosticTranslations = [];
+foreach ($diagnosticLabels as $key => $values) {
+    foreach ($values as $code => $label) { $diagnosticTranslations[$key][$code] = mwddns_t($label); }
+}
 $pgtitle = [mwddns_t('Services'), mwddns_t('Multi-WAN DDNS'), mwddns_t('Debug information')];
 $pglinks = ['', '/mwddns.php', '/mwddns_debug.php'];
 include('head.inc');
 ?>
 <body>
 <?php include('fbegin.inc'); ?>
+<?= mwddns_gui_styles() ?>
 <style>
 /* Scope every override: pfSense themes may remove Bootstrap panel padding. */
 #mwddns-debug {
     --mwddns-debug-border: rgba(127, 127, 127, .32);
     --mwddns-debug-tint: rgba(127, 127, 127, .07);
     width: 100%;
-    max-width: 1380px;
-    margin: 0 auto;
+    max-width: none;
+    margin: 0;
     padding: 8px 20px 36px;
     box-sizing: border-box;
 }
 #mwddns-debug .panel {
     margin-bottom: 22px;
-    border-radius: 6px;
+    border-radius: 0;
     border: 1px solid var(--mwddns-debug-border);
 }
 #mwddns-debug .panel > .panel-heading {
     padding: 14px 22px;
-    border-radius: 5px 5px 0 0;
+    border-radius: 0;
 }
 #mwddns-debug .panel > .panel-body {
     padding: 22px;
@@ -175,7 +225,7 @@ include('head.inc');
     margin: 0;
     padding: 18px;
     border: 1px solid var(--mwddns-debug-border);
-    border-radius: 5px;
+    border-radius: 0;
     background: var(--mwddns-debug-tint);
 }
 #mwddns-debug .mwddns-debug-field > label,
@@ -217,29 +267,94 @@ include('head.inc');
 #mwddns-debug .mwddns-debug-result-notes { margin-top: 20px; }
 #mwddns-debug details > summary { cursor: pointer; }
 #mwddns-debug details > summary .panel-title { display: inline; margin-left: 6px; }
-#mwddns-debug details:not([open]) > .panel-heading { border-bottom: 0; border-radius: 5px; }
+#mwddns-debug details:not([open]) > .panel-heading { border-bottom: 0; border-radius: 0; }
 #mwddns-debug summary:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
 #mwddns-debug .table-responsive {
     margin: 18px 0 0;
     border: 1px solid var(--mwddns-debug-border);
-    border-radius: 4px;
+    border-radius: 0;
 }
 #mwddns-debug table { margin: 0; width: 100%; }
 #mwddns-debug table > thead > tr > th,
 #mwddns-debug table > tbody > tr > td { padding: 12px 14px; overflow-wrap: anywhere; }
+#mwddns-debug .mwddns-debug-history .table-responsive { overflow-x: auto; }
+#mwddns-debug .mwddns-debug-history table { min-width: 52rem; }
+#mwddns-debug .mwddns-debug-history th { white-space: nowrap; }
+#mwddns-debug .mwddns-debug-history time { display: inline-block; white-space: nowrap; }
+#mwddns-debug .mwddns-debug-history td { vertical-align: middle; }
+#mwddns-debug .mwddns-debug-history-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+#mwddns-debug .mwddns-debug-history-actions form { margin: 0; }
+#mwddns-debug .mwddns-debug-history-actions .btn { white-space: nowrap; }
 #mwddns-debug .mwddns-debug-preview { margin: 24px 0 0; }
 #mwddns-debug .mwddns-debug-preview-title { margin: 0 0 12px; font-size: 1em; font-weight: 600; }
 #mwddns-debug .mwddns-debug-summary { margin-top: 22px; }
-#mwddns-debug .mwddns-debug-summary th { font-size: .9em; }
-#mwddns-debug .mwddns-debug-summary td { font-size: .9em; vertical-align: top; }
-#mwddns-debug .mwddns-debug-summary code { white-space: normal; }
+#mwddns-debug .mwddns-debug-summary .table-responsive {
+    max-width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+}
+#mwddns-debug .mwddns-debug-summary table { min-width: 86rem; table-layout: auto; }
+#mwddns-debug .mwddns-debug-summary th { font-size: .9em; white-space: nowrap; }
+#mwddns-debug .mwddns-debug-summary td {
+    font-size: .9em;
+    vertical-align: top;
+    overflow-wrap: normal;
+    word-break: normal;
+}
+#mwddns-debug .mwddns-debug-summary th:nth-child(1),
+#mwddns-debug .mwddns-debug-summary td:nth-child(1) { min-width: 11ch; white-space: nowrap; }
+#mwddns-debug .mwddns-debug-summary th:nth-child(2),
+#mwddns-debug .mwddns-debug-summary td:nth-child(2) { min-width: 11em; }
+#mwddns-debug .mwddns-debug-summary th:nth-child(3),
+#mwddns-debug .mwddns-debug-summary td:nth-child(3) {
+    min-width: 26ch;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+#mwddns-debug .mwddns-debug-summary th:nth-child(4),
+#mwddns-debug .mwddns-debug-summary td:nth-child(4) { min-width: 15em; }
+#mwddns-debug .mwddns-debug-summary th:nth-child(5),
+#mwddns-debug .mwddns-debug-summary td:nth-child(5) { min-width: 10em; }
+#mwddns-debug .mwddns-debug-summary th:nth-child(6),
+#mwddns-debug .mwddns-debug-summary td:nth-child(6) { min-width: 13em; }
+#mwddns-debug .mwddns-debug-summary th:nth-child(7),
+#mwddns-debug .mwddns-debug-summary td:nth-child(7) { min-width: 22em; }
+#mwddns-debug .mwddns-debug-summary code,
+#mwddns-debug .mwddns-debug-number {
+    display: inline-block;
+    white-space: nowrap;
+    overflow-wrap: normal;
+    word-break: normal;
+    font-variant-numeric: tabular-nums;
+}
+#mwddns-debug .mwddns-debug-detail { display: block; margin-top: 7px; line-height: 1.6; }
+#mwddns-debug .mwddns-debug-warning + .mwddns-debug-warning { margin-top: 12px; }
+#mwddns-debug .mwddns-debug-checkpoint {
+    display: grid;
+    grid-template-columns: minmax(12em, 1fr) minmax(0, 2fr);
+    gap: 10px 20px;
+    padding: 16px;
+    border: 1px solid var(--mwddns-debug-border);
+    margin: 16px 0;
+}
+#mwddns-debug .mwddns-debug-checkpoint dt { text-align: left; }
+#mwddns-debug .mwddns-debug-checkpoint dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+    font-variant-numeric: tabular-nums;
+}
 #mwddns-debug pre {
     max-height: 36em;
     overflow: auto;
     margin: 0;
     padding: 18px;
     border: 1px solid var(--mwddns-debug-border);
-    border-radius: 5px;
+    border-radius: 0;
     background: var(--mwddns-debug-tint);
     color: inherit;
     white-space: pre-wrap;
@@ -255,11 +370,13 @@ include('head.inc');
     #mwddns-debug .panel > .panel-body { padding: 16px; }
     #mwddns-debug .mwddns-debug-fields { grid-template-columns: minmax(0, 1fr); gap: 14px; }
     #mwddns-debug .mwddns-debug-field { padding: 14px; }
+    #mwddns-debug .mwddns-debug-checkpoint { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+    #mwddns-debug .mwddns-debug-checkpoint dd { margin-bottom: 10px; }
     #mwddns-debug .mwddns-debug-actions .btn { flex: 1 1 auto; }
     #mwddns-debug .alert, #mwddns-debug pre { padding: 14px; }
 }
 </style>
-<section class="page-content-main">
+<section class="page-content-main mwddns-page">
 <div id="mwddns-debug" class="container-fluid">
 <?php if ($error !== ''): ?>
     <div class="alert alert-danger"><?= mwddns_debug_label($error) ?></div>
@@ -324,23 +441,103 @@ include('head.inc');
         </table></div>
     </div>
 </details>
+<div class="panel panel-default mwddns-debug-history">
+    <div class="panel-heading"><h2 class="panel-title" id="debug-history-heading"><?= mwddns_debug_label('Recent Debug reports') ?></h2></div>
+    <div class="panel-body">
+<?php if (!$recentReports): ?>
+        <p><?= mwddns_debug_label('No Debug reports retained.') ?></p>
+<?php else: ?>
+        <div class="table-responsive" tabindex="0" role="region" aria-labelledby="debug-history-heading">
+        <table class="table table-condensed">
+            <thead><tr>
+                <th scope="col"><?= mwddns_debug_label('Report time') ?></th>
+                <th scope="col"><?= mwddns_debug_label('Status') ?></th>
+                <th scope="col"><?= mwddns_debug_label('Actions') ?></th>
+            </tr></thead>
+            <tbody>
+<?php foreach ($recentReports as $reportId => $reportStatus): ?>
+                <tr<?= $reportId === $job ? ' class="active"' : '' ?>>
+                    <td><?= $reportStatus['started'] > 0 ? mwddns_debug_time(date(DATE_ATOM, $reportStatus['started'])) : mwddns_debug_label('Not observed') ?></td>
+                    <td>
+                        <?= mwddns_debug_label($stateLabels[$reportStatus['state']] ?? 'Report unavailable.') ?>
+<?php if ($reportStatus['state'] === 'complete' && $reportStatus['partial'] === true): ?>
+                        <small class="help-block text-warning"><?= mwddns_debug_label('Contains gaps or collection limits.') ?></small>
+<?php endif; ?>
+                    </td>
+                    <td><div class="mwddns-debug-history-actions">
+                        <a class="btn btn-default btn-sm" href="/mwddns_debug.php?job=<?= mwddns_debug_h($reportId) ?>"><?= mwddns_debug_label('Open report') ?></a>
+<?php if (in_array($reportStatus['state'], ['complete', 'failed'], true)): ?>
+                        <form method="post" action="/mwddns_debug.php">
+                            <?= mwddns_csrf_input() ?>
+                            <input type="hidden" name="job" value="<?= mwddns_debug_h($reportId) ?>">
+                            <button type="submit" class="btn btn-success btn-sm" name="action" value="<?= $reportStatus['state'] === 'complete' ? 'download' : 'diagnostics' ?>"><?= mwddns_debug_label($reportStatus['state'] === 'complete' ? 'Download sanitized report' : 'Download failure diagnostics') ?></button>
+                        </form>
+<?php endif; ?>
+                    </div></td>
+                </tr>
+<?php endforeach; ?>
+            </tbody>
+        </table></div>
+<?php endif; ?>
+    </div>
+</div>
 <div class="panel panel-default">
     <div class="panel-heading"><h2 class="panel-title"><?= mwddns_debug_label('Collection result') ?></h2></div>
     <div class="panel-body">
         <p class="mwddns-debug-status" role="status"><?= mwddns_debug_label($stateLabels[$status['state']]) ?></p>
-        <p class="help-block"><?= mwddns_debug_label('Reports expire after 24 hours. At most 3 are retained; expired files are removed on the next collection. Download the report before leaving this page, or keep its page URL.') ?></p>
+        <p class="help-block"><?= mwddns_debug_label('Reports expire after 24 hours. At most 3 are retained; expired files are removed on the next collection. Use the recent reports list to reopen retained reports.') ?></p>
 <?php if ($status['state'] === 'complete'): ?>
         <?php if (($status['partial'] ?? null) === true): ?>
         <div class="alert alert-warning"><?= mwddns_debug_label('Report collected with gaps or limits. Review source warnings; missing events do not prove the system was healthy.') ?></div>
         <?php endif; ?>
 <?php endif; ?>
+<?php if ($job !== '' && in_array($status['state'], ['queued', 'running', 'complete', 'failed'], true)): ?>
+        <h3 class="mwddns-debug-preview-title"><?= mwddns_debug_label('Collector diagnostics') ?></h3>
+        <p class="help-block"><?= mwddns_debug_label('Measurements describe the last recorded checkpoint, not page waiting time. Older jobs may have no measurements.') ?></p>
+<?php if ($status['state'] === 'failed'): ?>
+        <div class="alert alert-warning"><?= mwddns_debug_label('A last stage or stale status is a diagnostic lead, not proof of the root cause. Download the sanitized failure diagnostics before retrying.') ?></div>
+<?php endif; ?>
+<?php if ($status['state'] === 'complete'): ?>
+        <p class="help-block"><?= mwddns_debug_label('Completed totals cover all included sources. Dropped events count scanned matches only, not unread or missing logs. Older jobs may not contain totals.') ?></p>
+<?php endif; ?>
+        <dl class="mwddns-debug-checkpoint">
+<?php foreach ($diagnosticFields as $key => $label):
+    $value = $status['diagnostics'][$key] ?? null;
+    if (in_array($key, $sourceProgressFields, true) &&
+        ($status['diagnostics']['source'] ?? 'none') === 'none') {
+        $display = mwddns_t('Not applicable');
+    } elseif ($key === 'collector_line' && $value === 0) {
+        $display = mwddns_t('Not reported');
+    } elseif (isset($diagnosticLabels[$key]) && is_string($value)) {
+        $display = mwddns_t($diagnosticLabels[$key][$value] ?? 'Not reported');
+    } elseif ($key === 'source') {
+        $display = is_string($value) && $value !== 'none' ? $value : mwddns_t('Not reported');
+    } elseif (is_int($value) || is_float($value)) {
+        $display = in_array($key, ['elapsed_seconds', 'cpu_seconds'], true)
+            ? number_format($value, 3, '.', '') : (string)$value;
+    } else {
+        $display = mwddns_t('Not reported');
+    }
+?>
+            <dt><?= mwddns_debug_label($label) ?></dt>
+            <dd data-debug-field="<?= mwddns_debug_h($key) ?>"><?= mwddns_debug_h($display) ?></dd>
+<?php endforeach; ?>
+<?php foreach ($diagnosticTimes as $key => $label): ?>
+            <dt><?= mwddns_debug_label($label) ?></dt>
+            <dd data-debug-time="<?= $key ?>"><?= ($status['diagnostics'][$key] ?? 0) > 0 ? mwddns_debug_time(date(DATE_ATOM, $status['diagnostics'][$key])) : mwddns_debug_label($key === 'record_epoch' && ($status['diagnostics']['source'] ?? 'none') === 'none' ? 'Not applicable' : 'Not reported') ?></dd>
+<?php endforeach; ?>
+        </dl>
+<?php endif; ?>
 <?php if ($job !== ''): ?>
         <div class="mwddns-debug-actions">
-<?php if ($status['state'] === 'complete'): ?>
+<?php if (in_array($status['state'], ['complete', 'failed'], true)): ?>
         <form method="post" action="/mwddns_debug.php">
             <?= mwddns_csrf_input() ?>
             <input type="hidden" name="job" value="<?= $job ?>">
+<?php if ($status['state'] === 'complete'): ?>
             <button class="btn btn-success btn-sm" name="action" value="download"><?= mwddns_debug_label('Download sanitized report') ?></button>
+<?php endif; ?>
+            <button class="btn btn-default btn-sm" name="action" value="diagnostics"><?= mwddns_debug_label($status['state'] === 'failed' ? 'Download failure diagnostics' : 'Download collector diagnostics') ?></button>
             <button class="btn btn-default btn-sm" name="action" value="delete"><?= mwddns_debug_label('Delete report') ?></button>
         </form>
 <?php endif; ?>
@@ -350,6 +547,7 @@ include('head.inc');
 <?php if ($status['state'] === 'complete'): ?>
         <div class="mwddns-debug-summary">
         <h3 class="mwddns-debug-preview-title" id="debug-summary-heading"><?= mwddns_debug_label('Source coverage and counts') ?></h3>
+        <p id="mwddns-debug-time-note" class="help-block" hidden><?= mwddns_debug_label('Times follow your browser locale and time zone. The report retains original ISO timestamps.') ?><span id="mwddns-debug-time-zone"></span></p>
 <?php if ($sourceSummary): ?>
         <div class="table-responsive" tabindex="0" role="region" aria-labelledby="debug-summary-heading">
         <table class="table table-condensed">
@@ -362,13 +560,23 @@ include('head.inc');
             <tr>
                 <td><code><?= mwddns_debug_h($row['source']) ?></code></td>
                 <td><?= mwddns_debug_label($row['coverage']) ?></td>
-                <td><?= $row['oldest'] !== '' ? mwddns_debug_h($row['oldest']) : mwddns_debug_label('Not observed') ?><br><?= $row['newest'] !== '' ? mwddns_debug_h($row['newest']) : '' ?></td>
-                <td><?= (int)$row['matched'] ?> / <?= (int)$row['retained'] ?> / <?= (int)$row['dropped'] ?></td>
-                <td><?= (int)$row['groups'] ?></td>
-                <td<?= $row['limited'] ? ' class="text-warning"' : '' ?>><?= mwddns_debug_label($row['limited'] ? 'Limits reached' : 'None reported') ?></td>
+                <td><?= $row['oldest'] !== '' ? mwddns_debug_time($row['oldest']) : mwddns_debug_label('Not observed') ?><br><?= $row['newest'] !== '' ? mwddns_debug_time($row['newest']) : '' ?></td>
+                <td><span class="mwddns-debug-number"><?= (int)$row['matched'] ?> / <?= (int)$row['retained'] ?> / <?= (int)$row['dropped'] ?></span>
+<?php if ($row['drop_stages_available']): ?>
+                    <small class="mwddns-debug-detail"><?= mwddns_debug_label('Dropped at candidate / allocation / report-size stage') ?>:<br><span class="mwddns-debug-number"><?= (int)$row['candidate_dropped'] ?> / <?= (int)$row['allocation_dropped'] ?> / <?= (int)$row['size_dropped'] ?></span></small>
+<?php endif; ?>
+                </td>
+                <td><?= (int)$row['groups'] ?>
+                    <small class="mwddns-debug-detail"><?= mwddns_debug_label('Candidate group capacity') ?>: <?= (int)$row['candidate_limit'] ?></small>
+                </td>
+                <td<?= $row['limited'] ? ' class="text-warning"' : '' ?>><?= mwddns_debug_label($row['limited'] ? 'Limits reached' : 'None reported') ?>
+<?php if ($row['seconds_used'] !== null && $row['seconds_allocated'] !== null): ?>
+                    <small class="mwddns-debug-detail"><?= mwddns_debug_label('Scan seconds used / allocated') ?>:<br><span class="mwddns-debug-number"><?= number_format($row['seconds_used'], 2, '.', '') ?> / <?= number_format($row['seconds_allocated'], 2, '.', '') ?></span></small>
+<?php endif; ?>
+                </td>
                 <td><?php if ($row['warnings']): ?>
-<?php foreach ($row['warnings'] as $warning): ?>
-                    <code><?= mwddns_debug_h($warning) ?></code><br>
+<?php foreach ($row['warnings'] as $warningIndex => $warning): ?>
+                    <div class="mwddns-debug-warning"><?= mwddns_debug_label($row['warning_labels'][$warningIndex]) ?><br><code><?= mwddns_debug_h($warning) ?></code></div>
 <?php endforeach; ?>
                 <?php else: ?><?= mwddns_debug_label('None reported') ?><?php endif; ?></td>
             </tr>
@@ -381,8 +589,9 @@ include('head.inc');
         </div>
         <div class="mwddns-debug-result-notes">
         <p class="help-block"><?= mwddns_debug_label('Check source warnings and coverage before interpreting an empty result as healthy. No report can reconstruct logs that were never recorded.') ?></p>
-        <p class="help-block"><?= mwddns_debug_label('Event slots are shared fairly after each source\'s guaranteed minimum. Byte and time limits remain separate.') ?></p>
+        <p class="help-block"><?= mwddns_debug_label('Unused scan time and candidate capacity are shared within total limits. Every remaining source keeps a reservation. Read-byte limits remain separate.') ?></p>
         <p class="help-block"><?= mwddns_debug_label('Event-code counts overlap when a record has multiple codes. DHCPREQUEST histograms count scanned requests even when event groups are dropped.') ?></p>
+        <p class="help-block"><?= mwddns_debug_label('Dropped counts include scanned events only; unread records cannot be counted. New reports show observed timestamps within the requested window, not proof of continuous coverage.') ?></p>
         </div>
         <div class="mwddns-debug-preview">
         <h3 class="mwddns-debug-preview-title"><?= mwddns_debug_label('Report preview') ?></h3>
@@ -394,11 +603,79 @@ include('head.inc');
 </div>
 </div>
 </section>
+<script>
+(function () {
+    var timestamps = document.querySelectorAll('#mwddns-debug time.mwddns-debug-timestamp');
+    if (!timestamps.length || typeof Intl === 'undefined' ||
+            typeof Intl.DateTimeFormat !== 'function') {
+        return;
+    }
+    try {
+        var locales = navigator.languages && navigator.languages.length
+            ? navigator.languages : (navigator.language || undefined);
+        var formatter = new Intl.DateTimeFormat(locales, {
+            year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit', second: '2-digit',
+            timeZoneName: 'short'
+        });
+        Array.prototype.forEach.call(timestamps, function (element) {
+            var date = new Date(element.getAttribute('datetime'));
+            if (!isNaN(date.getTime())) {
+                element.textContent = formatter.format(date);
+            }
+        });
+        var zone = document.getElementById('mwddns-debug-time-zone');
+        var timeZone = formatter.resolvedOptions().timeZone;
+        if (zone && timeZone) {
+            zone.textContent = ' (' + timeZone + ')';
+        }
+        var note = document.getElementById('mwddns-debug-time-note');
+        if (note) { note.hidden = false; }
+    } catch (error) {
+        // Keep the original ISO timestamps if locale formatting is unavailable.
+    }
+}());
+</script>
 <?php if (in_array($status['state'], ['queued', 'running'], true)): ?>
 <script>
 (function () {
     var attempts = 0;
     var job = <?= json_encode($job, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+    var labels = <?= json_encode($diagnosticTranslations, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+    var unavailable = <?= json_encode(mwddns_t('Not reported'), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+    var notApplicable = <?= json_encode(mwddns_t('Not applicable'), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+    var sourceFields = <?= json_encode($sourceProgressFields, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+    function updateProgress(data) {
+        Array.prototype.forEach.call(document.querySelectorAll('[data-debug-field]'), function (element) {
+            var key = element.getAttribute('data-debug-field');
+            var value = data[key];
+            var display = unavailable;
+            if (sourceFields.indexOf(key) !== -1 && (!data.source || data.source === 'none')) {
+                display = notApplicable;
+            } else if (key === 'collector_line' && value === 0) {
+                display = unavailable;
+            } else if (labels[key] && typeof value === 'string') {
+                display = labels[key][value] || unavailable;
+            } else if (key === 'source' && typeof value === 'string' && value !== 'none') {
+                display = value;
+            } else if (typeof value === 'number' && isFinite(value)) {
+                display = key === 'elapsed_seconds' || key === 'cpu_seconds' ? value.toFixed(3) : String(value);
+            }
+            element.textContent = display;
+        });
+        Array.prototype.forEach.call(document.querySelectorAll('[data-debug-time]'), function (element) {
+            var key = element.getAttribute('data-debug-time');
+            if (key === 'record_epoch' && (!data.source || data.source === 'none')) {
+                element.textContent = notApplicable;
+                return;
+            }
+            var value = data[key];
+            var date = typeof value === 'number' && value > 0 ? new Date(value * 1000) : null;
+            element.textContent = date && !isNaN(date.getTime())
+                ? date.toLocaleString(navigator.languages && navigator.languages.length ? navigator.languages : navigator.language)
+                : unavailable;
+        });
+    }
     function poll() {
         if (++attempts > 45) { return; }
         fetch('/mwddns_debug.php?status=' + job, {credentials: 'same-origin', cache: 'no-store'})
@@ -407,6 +684,7 @@ include('head.inc');
                 return response.json();
             })
             .then(function (result) {
+                updateProgress(result.diagnostics || {});
                 if (result.state === 'queued' || result.state === 'running') {
                     window.setTimeout(poll, 3000);
                 } else {

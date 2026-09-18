@@ -10,7 +10,7 @@ require_once('/usr/local/pkg/mwddns.inc');
 require_once('/usr/local/pkg/mwddns/upgrade.inc');
 if (!mwddns_upgrade_allowed()) {
     http_response_code(403);
-    exit('Full administrator access is required.');
+    exit(htmlspecialchars(mwddns_t('Full administrator access is required.'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'));
 }
 header('Cache-Control: no-store');
 header('X-Content-Type-Options: nosniff');
@@ -38,7 +38,8 @@ $errorLabels = [
     'VERSION_INVALID' => 'Package version information is invalid or inconsistent.',
     'ARCHIVE_LIMIT' => 'The archive exceeds safety limits or contains unsupported entries.',
     'DISK_SPACE' => 'Insufficient space. No upgrade was started.',
-    'JOB_LIMIT' => 'Three uploads are retained. Discard an old upload before adding another.',
+    'JOB_LIMIT' => 'Upload slots are full and no old upload can be safely removed. Wait for active jobs or review retained uploads.',
+    'CLEANUP_FAILED' => 'An old upload could not be safely removed. Review retained uploads and retry. Persistent backups were not removed.',
     'UPLOAD_FAILED' => 'Upload failed. Check the ZIP size and the WebGUI upload limit.',
     'CONFIRMATION_REQUIRED' => 'Confirm the trusted source and the selected upgrade mode.',
     'EXPIRED' => 'This upload has expired. Upload the ZIP again.',
@@ -71,15 +72,24 @@ $labels = [
     'recovery_required' => 'Manual recovery required.', 'missing' => 'Upload unavailable.',
     'expired' => 'Upload expired.', 'interrupted' => 'Upgrade interrupted or status is stale. Check before retrying.',
 ];
+$stageLabels = [
+    'checking' => 'Checking the uploaded ZIP...', 'ready' => 'Package ready',
+    'queued' => 'Waiting to start', 'backing_up' => 'Creating private backup',
+    'installing' => 'Installing plugin files', 'resetting' => 'Clearing plugin data',
+    'rolling_back' => 'Restoring previous version', 'complete' => 'Upgrade complete.',
+    'rolled_back' => 'Upgrade failed; previous MWDDNS files and data restored.',
+    'failed' => 'Upgrade failed.', 'recovery_required' => 'Manual recovery required.',
+];
 $pgtitle = [mwddns_t('Services'), mwddns_t('Multi-WAN DDNS'), mwddns_t('Plugin upgrade')];
 $pglinks = ['', '/mwddns.php', '/mwddns_upgrade.php'];
 include('head.inc');
 ?>
 <body>
 <?php include('fbegin.inc'); ?>
+<?= mwddns_gui_styles() ?>
 <style>
-#mwddns-upgrade { max-width:1180px; margin:0 auto; padding:10px 20px 36px; }
-#mwddns-upgrade .panel { margin-bottom:22px; border-radius:6px; }
+#mwddns-upgrade { width:100%; max-width:none; margin:0; padding:10px 20px 36px; }
+#mwddns-upgrade .panel { margin-bottom:22px; border-radius:0; }
 #mwddns-upgrade .panel-heading { padding:14px 22px; }
 #mwddns-upgrade .panel-body { padding:22px; }
 #mwddns-upgrade p, #mwddns-upgrade label { line-height:1.65; }
@@ -89,9 +99,18 @@ include('head.inc');
 #mwddns-upgrade input[type="radio"], #mwddns-upgrade input[type="checkbox"] { position:static; margin-right:8px; }
 #mwddns-upgrade .upgrade-confirm { max-width:28em; margin:10px 0 18px; }
 #mwddns-upgrade code { overflow-wrap:anywhere; }
+#mwddns-upgrade .mwddns-upgrade-dialog {
+    position:fixed; inset:0; width:calc(100% - 32px); max-width:36em;
+    max-height:calc(100vh - 32px); margin:auto; padding:0; overflow:auto; color:inherit;
+}
+#mwddns-upgrade .mwddns-upgrade-dialog:not([open]) { display:none; }
+#mwddns-upgrade .mwddns-upgrade-dialog::backdrop { background:rgba(0,0,0,.55); }
+#mwddns-upgrade .mwddns-upgrade-dialog .upgrade-actions {
+    justify-content:flex-end; margin:0; padding:16px 22px;
+}
 @media(max-width:767px) { #mwddns-upgrade { padding:4px 10px 24px; } #mwddns-upgrade .panel-body { padding:16px; } }
 </style>
-<section class="page-content-main"><div id="mwddns-upgrade" class="container-fluid">
+<section class="page-content-main mwddns-page"><div id="mwddns-upgrade" class="container-fluid">
 <?php if ($error !== ''): ?><div class="alert alert-danger"><?= mwddns_upgrade_label($error) ?></div><?php endif; ?>
 <div class="panel panel-default">
 <div class="panel-heading"><h2 class="panel-title"><?= mwddns_upgrade_label('Plugin upgrade') ?></h2></div>
@@ -99,6 +118,7 @@ include('head.inc');
     <p><?= mwddns_upgrade_label('Installed version') ?>: <strong><?= mwddns_upgrade_h(mwddns_upgrade_version()) ?></strong></p>
     <div class="alert alert-warning"><?= mwddns_upgrade_label('Only upload releases from a source you trust. The installer runs as root. SHA256 checks detect changed files; they do not authenticate the publisher.') ?></div>
     <p><?= mwddns_upgrade_label('Uploads and working files use /tmp and may disappear on reboot. They are not permanent backups.') ?></p>
+    <p><?= mwddns_upgrade_label('At most 3 uploads are retained. A new upload automatically removes the oldest idle upload when needed. Active, interrupted and recovery-required jobs are protected; persistent backups are kept.') ?></p>
     <p><?= mwddns_upgrade_label('Before installation, MWDDNS data and files are backed up under /conf/mwddns-backups. Backups contain credentials, remain after reset, and must not be shared.') ?></p>
     <p><?= mwddns_upgrade_label('Do not reboot or change other pfSense configuration during installation. Only MWDDNS is paused; power loss may require manual recovery.') ?></p>
     <form method="post" enctype="multipart/form-data" action="/mwddns_upgrade.php">
@@ -118,7 +138,8 @@ include('head.inc');
 <div class="panel-body">
     <p role="status"><strong><?= mwddns_upgrade_label($labels[$status['state']] ?? 'Upload unavailable.') ?></strong></p>
 <?php if (isset($status['stage'])): ?>
-    <p><?= mwddns_upgrade_label('Stage') ?>: <code><?= mwddns_upgrade_h($status['stage']) ?></code></p>
+    <p><?= mwddns_upgrade_label('Stage') ?>: <?= mwddns_upgrade_label($stageLabels[$status['stage']] ?? 'Unknown stage') ?>
+        <small><code><?= mwddns_upgrade_h($status['stage']) ?></code></small></p>
 <?php endif; ?>
 <?php if (isset($status['error'])): ?>
     <div class="alert alert-warning"><?= mwddns_upgrade_label($errorLabels[$status['error']] ?? 'Upgrade operation failed. Check the current stage and retained backup.') ?>
@@ -134,8 +155,10 @@ include('head.inc');
     <p><?= mwddns_upgrade_label('Private backup') ?>: <code>/conf/mwddns-backups/<?= mwddns_upgrade_h($status['backup']) ?></code></p>
 <?php endif; ?>
 <?php if ($status['state'] === 'ready'): ?>
-    <form method="post" action="/mwddns_upgrade.php">
+    <div id="mwddns-upgrade-choice-error" class="alert alert-danger" role="alert" hidden></div>
+    <form id="mwddns-upgrade-install-form" method="post" action="/mwddns_upgrade.php" novalidate>
         <?= mwddns_csrf_input() ?><input type="hidden" name="job" value="<?= $job ?>">
+        <input type="hidden" name="action" value="install">
         <label class="upgrade-choice"><input type="radio" name="mode" value="preserve" checked>
             <?= mwddns_upgrade_label('Keep all MWDDNS data (default)') ?></label>
         <label class="upgrade-choice"><input type="radio" name="mode" value="reset">
@@ -144,8 +167,22 @@ include('head.inc');
         <input class="form-control upgrade-confirm" id="upgrade-confirm" name="confirmation" autocomplete="off" spellcheck="false">
         <label class="upgrade-choice"><input type="checkbox" name="trusted" value="yes" required>
             <?= mwddns_upgrade_label('I trust this package and authorize its installer to run as root.') ?></label>
-        <div class="upgrade-actions"><button class="btn btn-danger" name="action" value="install"><?= mwddns_upgrade_label('Upgrade now') ?></button></div>
+        <div class="upgrade-actions"><button id="mwddns-upgrade-open-confirm" type="submit" class="btn btn-danger no-confirm"><?= mwddns_upgrade_label('Upgrade now') ?></button></div>
     </form>
+    <dialog id="mwddns-upgrade-confirm-dialog" class="panel panel-default modal-content mwddns-upgrade-dialog"
+            aria-labelledby="mwddns-upgrade-confirm-title" aria-describedby="mwddns-upgrade-confirm-mode">
+        <div class="panel-heading"><h2 id="mwddns-upgrade-confirm-title" class="panel-title"><?= mwddns_upgrade_label('Confirm upgrade') ?></h2></div>
+        <div class="panel-body">
+            <p><?= mwddns_upgrade_label('Uploaded version') ?>: <strong><?= mwddns_upgrade_h($status['version'] ?? '') ?></strong></p>
+            <p id="mwddns-upgrade-confirm-mode"></p>
+            <p><?= mwddns_upgrade_label('No changes are made until you confirm.') ?></p>
+            <p><?= mwddns_upgrade_label('Do not reboot or change other pfSense configuration during installation. Only MWDDNS is paused; power loss may require manual recovery.') ?></p>
+        </div>
+        <div class="panel-footer upgrade-actions">
+            <button id="mwddns-upgrade-cancel" type="button" class="btn btn-default" autofocus><?= mwddns_upgrade_label('Cancel') ?></button>
+            <button id="mwddns-upgrade-confirm-submit" type="button" class="btn btn-danger no-confirm"><?= mwddns_upgrade_label('Upgrade now') ?></button>
+        </div>
+    </dialog>
 <?php endif; ?>
 <?php if ($job !== ''): ?>
     <div class="upgrade-actions">
@@ -169,6 +206,90 @@ include('head.inc');
 <?php endforeach; ?>
 </ul></div></div>
 </div></section>
+<script>
+(function () {
+    var form = document.getElementById('mwddns-upgrade-install-form');
+    var dialog = document.getElementById('mwddns-upgrade-confirm-dialog');
+    if (!form || !dialog) { return; }
+    var trigger = document.getElementById('mwddns-upgrade-open-confirm');
+    var cancel = document.getElementById('mwddns-upgrade-cancel');
+    var submit = document.getElementById('mwddns-upgrade-confirm-submit');
+    var error = document.getElementById('mwddns-upgrade-choice-error');
+    var pendingMode = null;
+    var labels = <?= json_encode([
+        'trusted' => mwddns_t('Please confirm that you trust this package.'),
+        'mode' => mwddns_t('Choose an upgrade mode.'),
+        'clear' => mwddns_t('To clear plugin data, enter CLEAR MWDDNS exactly.'),
+        'changed' => mwddns_t('Upgrade choices changed. Review and confirm again.'),
+        'preserve' => mwddns_t('Confirm upgrade while keeping all MWDDNS data.'),
+        'reset' => mwddns_t('Confirm upgrade after backing up and clearing all MWDDNS data.'),
+    ], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+    function showError(message, control) {
+        error.textContent = message;
+        error.hidden = false;
+        if (control) { control.focus(); }
+    }
+    function validate() {
+        var mode = form.querySelector('input[name="mode"]:checked');
+        if (!mode || (mode.value !== 'preserve' && mode.value !== 'reset')) {
+            showError(labels.mode, trigger);
+            return null;
+        }
+        if (!form.elements.trusted.checked) {
+            showError(labels.trusted, form.elements.trusted);
+            return null;
+        }
+        if (mode.value === 'reset' && form.elements.confirmation.value !== 'CLEAR MWDDNS') {
+            showError(labels.clear, form.elements.confirmation);
+            return null;
+        }
+        error.hidden = true;
+        return mode.value;
+    }
+    function closeDialog() {
+        if (typeof dialog.close === 'function') {
+            dialog.close();
+        } else {
+            dialog.removeAttribute('open');
+            trigger.focus();
+        }
+        pendingMode = null;
+    }
+    form.addEventListener('submit', function (event) {
+        event.preventDefault();
+        var mode = validate();
+        if (!mode || dialog.hasAttribute('open')) { return; }
+        pendingMode = mode;
+        document.getElementById('mwddns-upgrade-confirm-mode').textContent = labels[mode];
+        if (typeof dialog.showModal === 'function') {
+            dialog.showModal();
+        } else {
+            dialog.setAttribute('open', '');
+        }
+        cancel.focus();
+    });
+    cancel.addEventListener('click', closeDialog);
+    dialog.addEventListener('close', function () {
+        pendingMode = null;
+        if (!trigger.disabled) { trigger.focus(); }
+    });
+    submit.addEventListener('click', function () {
+        var expected = pendingMode;
+        closeDialog();
+        var mode = validate();
+        if (!mode) { return; }
+        if (mode !== expected) {
+            showError(labels.changed, trigger);
+            return;
+        }
+        trigger.disabled = true;
+        submit.disabled = true;
+        // The hidden action survives disabled buttons. Authorization, CSRF,
+        // version checks and the exact reset phrase are rechecked by the server.
+        HTMLFormElement.prototype.submit.call(form);
+    });
+}());
+</script>
 <?php if (in_array($status['state'], ['checking', 'queued', 'running'], true)): ?>
 <script>
 (function () {

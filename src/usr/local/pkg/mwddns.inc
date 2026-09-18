@@ -119,6 +119,79 @@ function mwddns_t(string $key): string
     return $strings[$key] ?? $key;
 }
 
+/** Theme-scoped geometry only; pfSense retains control of palette and typography. */
+function mwddns_gui_styles(): string
+{
+    return <<<'CSS'
+<style>
+.mwddns-page .panel,
+.mwddns-page .panel-heading,
+.mwddns-page .panel-body,
+.mwddns-page .panel-footer,
+.mwddns-page .modal-content,
+.mwddns-page .btn,
+.mwddns-page .form-control,
+.mwddns-page .input-group-addon,
+.mwddns-page .alert,
+.mwddns-page .table-responsive,
+.mwddns-page .label,
+.mwddns-page .badge,
+.mwddns-page code,
+.mwddns-page pre,
+.mwddns-page dialog { border-radius: 0 !important; }
+.mwddns-page [hidden] { display: none !important; }
+.mwddns-page .mwddns-rule-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    white-space: nowrap;
+    vertical-align: middle;
+}
+.mwddns-page .mwddns-rule-delete-form {
+    display: inline-flex;
+    align-items: center;
+    margin: 0;
+    padding: 0;
+}
+.mwddns-page .mwddns-rule-copy,
+.mwddns-page .mwddns-rule-edit,
+.mwddns-page .mwddns-delete-rule {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 20px;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    margin: 0;
+    font-size: 18px;
+    line-height: 1;
+    vertical-align: middle;
+}
+.mwddns-page .mwddns-rule-actions .fa-regular,
+.mwddns-page .mwddns-rule-actions .fa-solid {
+    display: block;
+    font-size: 18px;
+    line-height: 1;
+}
+.mwddns-page .mwddns-delete-rule {
+    appearance: none;
+    color: #d9534f;
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+}
+.mwddns-page .mwddns-delete-rule:hover { color: #c9302c; }
+.mwddns-page .mwddns-rule-copy:focus-visible,
+.mwddns-page .mwddns-rule-edit:focus-visible,
+.mwddns-page .mwddns-delete-rule:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: 4px;
+}
+</style>
+CSS;
+}
+
 /**
  * Return (and lazily create) a per-session CSRF token for MWDDNS forms.
  */
@@ -316,6 +389,22 @@ function mwddns_get_rule(int $id): ?array
     return $rules[$id] ?? null;
 }
 
+/** Match rule names without surrounding whitespace or ASCII case differences. */
+function mwddns_rule_name_key(string $name): string
+{
+    return strtolower(trim($name));
+}
+
+function mwddns_rule_name_counts(array $rules): array
+{
+    $counts = [];
+    foreach ($rules as $rule) {
+        $key = mwddns_rule_name_key((string)($rule['name'] ?? ''));
+        if ($key !== '') { $counts[$key] = ($counts[$key] ?? 0) + 1; }
+    }
+    return $counts;
+}
+
 /**
  * Persist the full rules array back into pfSense config.xml.
  *
@@ -338,6 +427,14 @@ function mwddns_save_rules(array $rules, ?string $expectedRevision = null): void
         $current = mwddns_get_rules();
         if (!hash_equals(mwddns_rules_revision($current), $expectedRevision)) {
             throw new RuntimeException('Configuration changed. Reload the page before saving.');
+        }
+        // Enforce name uniqueness under the same lock as the revision/write.
+        // Legacy duplicates may be retained or reduced, never increased.
+        $currentNames = mwddns_rule_name_counts($current);
+        foreach (mwddns_rule_name_counts($definitions) as $nameKey => $count) {
+            if ($count > max(1, $currentNames[$nameKey] ?? 0)) {
+                throw new RuntimeException('Rule name already exists. Choose a different name.');
+            }
         }
         if (mwddns_rules_revision($definitions) === mwddns_rules_revision($current)) {
             return;
