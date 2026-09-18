@@ -112,6 +112,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $allowedErrors = [
             'Invalid debug settings.', 'Invalid debug report.',
             'Debug storage is unavailable.', 'Debug collector could not be started.',
+            'Debug storage has insufficient free space. Free space in /tmp and retry.',
             'Debug collection is already running.', 'Debug report is unavailable or expired.',
             'Invalid request token. Please reload the page and try again.',
             'Configuration changed. Reload the page before saving.',
@@ -156,18 +157,23 @@ $diagnosticFields = [
     'stage' => 'Last collector stage', 'error_code' => 'Recorded failure reason',
     'elapsed_seconds' => 'Elapsed seconds at checkpoint',
     'cpu_seconds' => 'Collector CPU seconds at checkpoint', 'requested_days' => 'Requested days',
+    'report_bytes' => 'Encoded report bytes', 'report_written_bytes' => 'Report bytes written',
+    'storage_free_bytes' => 'Storage free bytes at checkpoint',
+    'storage_required_bytes' => 'Required free storage bytes',
+    'storage_reserve_bytes' => 'Storage safety reserve bytes', 'io_errno' => 'Recorded I/O error number',
 ];
 $sourceProgressFields = ['source', 'file_index', 'record_index', 'record_bytes',
     'source_bytes_scanned', 'matched_events', 'candidate_event_groups'];
 $diagnosticTimes = ['checkpoint_at' => 'Last checkpoint time'];
-if ($status['state'] === 'complete') {
+if ($status['state'] === 'complete' || isset($status['diagnostics']['total_sources'])) {
     $diagnosticFields += [
         'total_sources' => 'Sources included', 'total_files_scanned' => 'Total files scanned',
         'total_bytes_scanned' => 'Total bytes scanned', 'total_matched_events' => 'Total matched events',
         'total_retained_events' => 'Total retained events', 'total_dropped_events' => 'Total dropped events',
         'total_event_groups' => 'Total event groups',
     ];
-} else {
+}
+if ($status['state'] !== 'complete') {
     $diagnosticFields += [
         'source' => 'Last collector source', 'file_index' => 'Rotation scan index',
         'record_index' => 'Record scan index', 'record_bytes' => 'Last record bytes',

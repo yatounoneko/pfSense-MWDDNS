@@ -3,7 +3,9 @@
  * Debug jobs are separate from DNS updates. Only sanitized reports are saved.
  * This include never starts a job merely because a page was opened.
  */
-define('MWDDNS_DEBUG_DIR', MWDDNS_DNS_CACHE_DIR . '/debug');
+define('MWDDNS_DEBUG_DIR', '/tmp/mwddns-debug');
+define('MWDDNS_DEBUG_LEGACY_DIR', MWDDNS_DNS_CACHE_DIR . '/debug');
+define('MWDDNS_DEBUG_STORAGE_MARGIN', 1024 * 1024);
 define('MWDDNS_DEBUG_MAX_REPORT', 6 * 1024 * 1024);
 
 function mwddns_debug_settings(): array
@@ -106,14 +108,50 @@ function mwddns_debug_wans(): array
     return $rows;
 }
 
+function mwddns_debug_private_directory(string $path): bool
+{
+    clearstatcache(true, $path);
+    return !is_link($path) && is_dir($path) && fileowner($path) === 0 &&
+        (fileperms($path) & 0077) === 0;
+}
+
 function mwddns_debug_directory(): void
 {
-    if (is_link(MWDDNS_DNS_CACHE_DIR) || !mwddns_runtime_dir() ||
-        is_link(MWDDNS_DEBUG_DIR) ||
-        (!is_dir(MWDDNS_DEBUG_DIR) && !@mkdir(MWDDNS_DEBUG_DIR, 0700))) {
+    if (!file_exists(MWDDNS_DEBUG_DIR) && !is_link(MWDDNS_DEBUG_DIR)) {
+        $old = umask(0077);
+        try { @mkdir(MWDDNS_DEBUG_DIR, 0700); }
+        finally { umask($old); }
+    }
+    // Never adopt a directory planted by another user in world-writable /tmp.
+    if (!mwddns_debug_private_directory(MWDDNS_DEBUG_DIR)) {
         throw new RuntimeException('Debug storage is unavailable.');
     }
-    @chmod(MWDDNS_DEBUG_DIR, 0700);
+}
+
+/** Legacy reports stay downloadable; new jobs are never written to /var/run. */
+function mwddns_debug_roots(): array
+{
+    $roots = [];
+    foreach ([MWDDNS_DEBUG_DIR, MWDDNS_DEBUG_LEGACY_DIR] as $root) {
+        if ($root === MWDDNS_DEBUG_LEGACY_DIR && is_link(MWDDNS_DNS_CACHE_DIR)) { continue; }
+        if (mwddns_debug_private_directory($root)) { $roots[] = $root; }
+    }
+    return $roots;
+}
+
+function mwddns_debug_paths(): array
+{
+    $paths = [];
+    foreach (mwddns_debug_roots() as $root) {
+        foreach (glob($root . '/job-*', GLOB_ONLYDIR) ?: [] as $path) {
+            $id = substr(basename($path), 4);
+            if (preg_match('/^[a-f0-9]{32}$/D', $id) &&
+                mwddns_debug_private_directory($path) && !isset($paths[$id])) {
+                $paths[$id] = $path;
+            }
+        }
+    }
+    return $paths;
 }
 
 function mwddns_debug_path(string $id): string
@@ -121,11 +159,16 @@ function mwddns_debug_path(string $id): string
     if (!preg_match('/^[a-f0-9]{32}$/D', $id)) {
         throw new RuntimeException('Invalid debug report.');
     }
-    $path = MWDDNS_DEBUG_DIR . '/job-' . $id;
-    if (is_link($path)) {
-        throw new RuntimeException('Invalid debug report.');
+    foreach (mwddns_debug_roots() as $root) {
+        $path = $root . '/job-' . $id;
+        if (file_exists($path) || is_link($path)) {
+            if (!mwddns_debug_private_directory($path)) {
+                throw new RuntimeException('Invalid debug report.');
+            }
+            return $path;
+        }
     }
-    return $path;
+    return MWDDNS_DEBUG_DIR . '/job-' . $id;
 }
 
 function mwddns_debug_json(string $path): array
@@ -170,7 +213,10 @@ function mwddns_debug_diagnostic_labels(): array
             'parse_timestamp' => 'Parsing record timestamp', 'classify_event' => 'Classifying event',
             'group_event' => 'Grouping event', 'source_summary' => 'Summarizing source',
             'allocate' => 'Allocating report groups', 'report_limit' => 'Applying report size limit',
-            'write_report' => 'Writing report', 'complete' => 'Collection complete',
+            'serialize_report' => 'Encoding report', 'report_space' => 'Checking report storage space',
+            'write_report' => 'Writing report', 'sync_report' => 'Flushing report to storage',
+            'publish_report' => 'Publishing report file', 'final_status' => 'Recording completion status',
+            'complete' => 'Collection complete',
         ],
         'error_code' => [
             'NONE' => 'No collection failure recorded.',
@@ -181,6 +227,8 @@ function mwddns_debug_diagnostic_labels(): array
             'SNAPSHOT_FAILED' => 'Runtime snapshot failed.',
             'PROGRESS_WRITE_FAILED' => 'Progress checkpoint could not be written.',
             'IO_FAILED' => 'Collector input or output failed.',
+            'DISK_SPACE' => 'Insufficient free space for the report and safety reserve.',
+            'DISK_QUOTA' => 'Report storage quota was exceeded.',
             'INVALID_INPUT' => 'Collector input or report data was invalid.',
             'COLLECTOR_EXCEPTION' => 'Collector encountered an unexpected exception.',
             'START_FAILED' => 'Collector launcher failed.',
@@ -218,6 +266,9 @@ function mwddns_debug_diagnostics(array $status): array
         'total_sources' => 7, 'total_files_scanned' => 168, 'total_bytes_scanned' => 67108864,
         'total_matched_events' => 100000000, 'total_retained_events' => 100000000,
         'total_dropped_events' => 100000000, 'total_event_groups' => 5000,
+        'report_bytes' => 6291456, 'report_written_bytes' => 6291456,
+        'storage_free_bytes' => PHP_INT_MAX, 'storage_required_bytes' => 7340032,
+        'storage_reserve_bytes' => 1048576, 'io_errno' => 255,
     ] as $key => $maximum) {
         $value = $raw[$key] ?? null;
         if (is_int($value) && $value >= 0 && $value <= $maximum &&
@@ -314,9 +365,8 @@ function mwddns_debug_worker_busy(string $id): bool
 /** List metadata only; opening the page must not collect or decode full reports. */
 function mwddns_debug_jobs(): array
 {
-    if (is_link(MWDDNS_DNS_CACHE_DIR) || is_link(MWDDNS_DEBUG_DIR)) { return []; }
     $jobs = [];
-    foreach (glob(MWDDNS_DEBUG_DIR . '/job-*', GLOB_ONLYDIR) ?: [] as $path) {
+    foreach (mwddns_debug_paths() as $path) {
         $id = substr(basename($path), 4);
         if (is_link($path) || !preg_match('/^[a-f0-9]{32}$/D', $id)) { continue; }
         try { $jobs[$id] = mwddns_debug_status($id); }
@@ -349,7 +399,7 @@ function mwddns_debug_remove(string $id): void
             throw new RuntimeException('Debug collection is already running.');
         }
         foreach (['request.json', 'status.json', 'report.json',
-            'request.json.tmp', 'status.json.tmp', 'report.json.tmp', 'worker.lock'] as $name) {
+            'request.json.tmp', 'status.json.tmp', 'report.json.tmp', 'status.reserve', 'worker.lock'] as $name) {
             if (is_file($path . '/' . $name) || is_link($path . '/' . $name)) {
                 @unlink($path . '/' . $name);
             }
@@ -366,6 +416,9 @@ function mwddns_debug_start(array $settings): string
     if (!is_executable('/usr/local/bin/python3.11') || !is_executable('/usr/sbin/daemon')) {
         throw new RuntimeException('Debug collector could not be started.');
     }
+    if (is_link(MWDDNS_DEBUG_DIR . '/admission.lock')) {
+        throw new RuntimeException('Debug storage is unavailable.');
+    }
     $lock = @fopen(MWDDNS_DEBUG_DIR . '/admission.lock', 'c');
     if ($lock === false) {
         throw new RuntimeException('Debug storage is unavailable.');
@@ -374,8 +427,12 @@ function mwddns_debug_start(array $settings): string
         if (!flock($lock, LOCK_EX | LOCK_NB)) {
             throw new RuntimeException('Debug collection is already running.');
         }
+        $free = @disk_free_space(MWDDNS_DEBUG_DIR);
+        if ($free === false || $free < MWDDNS_DEBUG_MAX_REPORT + MWDDNS_DEBUG_STORAGE_MARGIN + 65536) {
+            throw new RuntimeException('Debug storage has insufficient free space. Free space in /tmp and retry.');
+        }
         $old = [];
-        foreach (glob(MWDDNS_DEBUG_DIR . '/job-*') ?: [] as $path) {
+        foreach (mwddns_debug_paths() as $path) {
             $id = substr(basename($path), 4);
             if (!preg_match('/^[a-f0-9]{32}$/D', $id) || is_link($path)) {
                 continue;

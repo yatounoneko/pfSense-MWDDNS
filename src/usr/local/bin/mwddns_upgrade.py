@@ -24,6 +24,7 @@ import xml.etree.ElementTree as ET
 BASE = Path("/tmp/mwddns-upgrade")
 BACKUPS = Path("/conf/mwddns-backups")
 RUNTIME = Path("/var/run/mwddns")
+DEBUG = Path("/tmp/mwddns-debug")
 XML = Path("/usr/local/pkg/mwddns.xml")
 CONFIG_HELPER = Path("/usr/local/bin/mwddns_upgrade_config.php")
 RC = "/usr/local/etc/rc.d/mwddns_watcher"
@@ -559,15 +560,25 @@ def restore_files(backup):
 
 def perform_install(job, state, checked):
     private_dir(RUNTIME, True)
-    debug_dir = RUNTIME / "debug"
-    private_dir(debug_dir, True)
-    with locked(BASE / "upgrade.lock"), locked(RUNTIME / "updates.lock"), locked(debug_dir / "admission.lock"):
+    debug_dirs = (RUNTIME / "debug", DEBUG)
+    for directory in debug_dirs:
+        private_dir(directory, True)
+    with contextlib.ExitStack() as guards:
+        for path in (BASE / "upgrade.lock", RUNTIME / "updates.lock",
+                     *(directory / "admission.lock" for directory in debug_dirs)):
+            guards.enter_context(locked(path))
         if version(checked["version"]) <= version(installed_version()):
             raise UpgradeError("VERSION_NOT_NEWER")
-        for status in debug_dir.glob("job-*/status.json"):
-            item = read_json(status)
-            if item.get("state") in ("queued", "running") and time.time() - int(item.get("started", 0)) < 180:
-                raise UpgradeError("BUSY")
+        for directory in debug_dirs:
+            for child in directory.glob("job-*"):
+                private_dir(child)
+                guards.enter_context(locked(child / "worker.lock"))
+                status = child / "status.json"
+                if not status.exists():
+                    continue
+                item = read_json(status)
+                if item.get("state") in ("queued", "running") and time.time() - int(item.get("started", 0)) < 180:
+                    raise UpgradeError("BUSY")
         request = read_json(job / "request.json")
         if request.get("mode") not in ("preserve", "reset") or request.get("trusted") is not True:
             raise UpgradeError("INVALID_STATE")
@@ -575,7 +586,8 @@ def perform_install(job, state, checked):
             raise UpgradeError("CONFIRMATION_REQUIRED")
         private_dir(BACKUPS, True)
         _, runtime_size = runtime_files(RUNTIME)
-        needed = runtime_size + checked["expanded_bytes"] + 16 * 1024 * 1024
+        _, debug_size = runtime_files(DEBUG)
+        needed = runtime_size + debug_size + checked["expanded_bytes"] + 16 * 1024 * 1024
         if shutil.disk_usage(BACKUPS).free < needed or shutil.disk_usage(BASE).free < checked["expanded_bytes"] + 16 * 1024 * 1024:
             raise UpgradeError("DISK_SPACE")
         backup = BACKUPS / ("upgrade-" + job.name[4:])
@@ -594,6 +606,7 @@ def perform_install(job, state, checked):
             run(["/usr/local/bin/php", str(helper), "backup", job.name[4:]], log=log)
             backup_files(checked, backup)
             copy_runtime(RUNTIME, backup / "runtime")
+            copy_runtime(DEBUG, backup / "debug")
             atomic(backup / "backup.json", {
                 "schema": "mwddns-upgrade-backup-v1", "created": int(time.time()),
                 "previous_version": state["previous_version"], "target_version": checked["version"],
@@ -619,6 +632,7 @@ def perform_install(job, state, checked):
                 run([RC, "onestop"], log=log, timeout=20)
                 run(["/usr/local/bin/php", str(helper), "reset", job.name[4:]], log=log)
                 clear_runtime(RUNTIME)
+                clear_runtime(DEBUG)
                 run([RC, "onestart"], log=log, timeout=20)
             run([RC, "onestatus"], log=log, timeout=15)
             state.update(state="complete", stage="complete", finished=int(time.time()))
@@ -633,6 +647,8 @@ def perform_install(job, state, checked):
                     run(["/usr/local/bin/php", str(helper), "restore", job.name[4:]], log=log)
                     clear_runtime(RUNTIME)
                     copy_runtime(backup / "runtime", RUNTIME)
+                    clear_runtime(DEBUG)
+                    copy_runtime(backup / "debug", DEBUG)
                     if was_running:
                         run([RC, "onestart"], log=log, timeout=20)
                     state.update(state="rolled_back", stage="rolled_back", error="INSTALL_FAILED")

@@ -23,6 +23,13 @@ mwddns_watcher_prestart()
         warn "MWDDNS requires ${python_bin} and ${watcher_script}"
         return 1
     fi
+    # /tmp may be disk-backed. Remove only owned Debug jobs during system boot.
+    # A normal restart/upgrade must preserve report history.
+    if [ -f /var/run/booting ] && [ -r /usr/local/bin/mwddns_debug.py ]; then
+        "${python_bin}" -B /usr/local/bin/mwddns_debug.py --boot-clean ||
+            warn "MWDDNS temporary Debug cleanup could not complete"
+    fi
+    return 0
 }
 
 load_rc_config "${name}"

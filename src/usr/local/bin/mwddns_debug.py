@@ -6,6 +6,7 @@ Unrecognized event details are deliberately omitted, not guessed to be safe.
 """
 import bz2
 import datetime as dt
+import errno
 import fcntl
 import gzip
 import heapq
@@ -17,6 +18,7 @@ import os
 from pathlib import Path
 import re
 import resource
+import shutil
 import signal
 import stat
 import subprocess
@@ -25,9 +27,11 @@ import time
 from urllib.parse import quote
 
 # Legacy upgrade validators require one literal collector_version declaration.
-COLLECTOR_METADATA = {"collector_version": "1.1.1"}
+COLLECTOR_METADATA = {"collector_version": "1.1.2"}
 
-BASE = Path("/var/run/mwddns/debug")
+BASE = Path("/tmp/mwddns-debug")
+STORAGE_MARGIN = 1024 * 1024
+STATUS_RESERVE = 65536
 MAX_FILE = 8 * 1024 * 1024
 MAX_TOTAL = 64 * 1024 * 1024
 MAX_REPORT = 6 * 1024 * 1024
@@ -146,12 +150,112 @@ def atomic(path, value):
     temporary = path.with_name(path.name + ".tmp")
     if path.is_symlink() or temporary.is_symlink():
         raise ValueError("Unsafe output")
-    with temporary.open("w", encoding="utf-8", newline="\n") as handle:
-        json.dump(value, handle, ensure_ascii=True, indent=2)
-        handle.write("\n")
-    os.chmod(temporary, 0o600)
-    os.replace(temporary, path)
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+            json.dump(value, handle, ensure_ascii=True, indent=2)
+            handle.write("\n")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        # Free partial output BEFORE the caller attempts its failure checkpoint.
+        temporary.unlink(missing_ok=True)
 
+
+class StorageError(Exception):
+    def __init__(self, code):
+        super().__init__(code)
+        self.code = code
+
+
+def private_directory(path):
+    meta = path.lstat()
+    return (stat.S_ISDIR(meta.st_mode) and meta.st_uid == 0 and
+            not stat.S_IMODE(meta.st_mode) & 0o077)
+
+
+def io_errno(error):
+    # Exception messages, paths and tracebacks are never exported.
+    for unused in range(4):
+        if isinstance(error, OSError):
+            return error.errno if type(error.errno) is int and 0 < error.errno < 256 else 0
+        error = getattr(error, "__cause__", None)
+        if error is None:
+            break
+    return 0
+
+
+def cleanup_temporaries(job):
+    for name in ("request.json.tmp", "report.json.tmp", "status.json.tmp", "status.reserve"):
+        try:
+            (job / name).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def write_report(job, report, progress):
+    progress.mark("serialize_report", source="none", force=True)
+    payload = (json.dumps(report, ensure_ascii=True, indent=2) + "\n").encode("utf-8")
+    if len(payload) > MAX_REPORT:
+        raise ValueError("Report limit")
+    required = len(payload) + STORAGE_MARGIN
+    free = shutil.disk_usage(job).free
+    progress.mark("report_space", force=True, report_bytes=len(payload), report_written_bytes=0,
+                  storage_free_bytes=free, storage_required_bytes=required,
+                  storage_reserve_bytes=STORAGE_MARGIN)
+    if free < required:
+        raise StorageError("DISK_SPACE")
+    target, temporary = job / "report.json", job / "report.json.tmp"
+    if target.is_symlink() or temporary.exists() or temporary.is_symlink():
+        raise ValueError("Unsafe output")
+    try:
+        progress.mark("write_report", force=True)
+        with temporary.open("xb") as handle:
+            for offset in range(0, len(payload), 65536):
+                chunk = payload[offset:offset + 65536]
+                if handle.write(chunk) != len(chunk):
+                    raise OSError(errno.EIO, "Short output")
+                progress.mark("write_report", report_written_bytes=offset + len(chunk))
+            progress.mark("sync_report", force=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        progress.mark("publish_report", force=True)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def clean_boot_reports():
+    # Called by the existing service only during pfSense boot, not on upgrades.
+    if not Path("/var/run/booting").is_file() or not BASE.exists():
+        return 0
+    if not private_directory(BASE):
+        return 1
+    admission = BASE / "admission.lock"
+    if admission.is_symlink():
+        return 1
+    with admission.open("a+b") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        for job in list(BASE.glob("job-*"))[:16]:
+            if not re.fullmatch(r"job-[a-f0-9]{32}", job.name) or not private_directory(job):
+                continue
+            worker = job / "worker.lock"
+            if worker.is_symlink():
+                continue
+            with worker.open("a+b") as handle:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    continue
+                for name in ("request.json", "status.json", "report.json", "request.json.tmp",
+                             "status.json.tmp", "report.json.tmp", "status.reserve"):
+                    (job / name).unlink(missing_ok=True)
+            worker.unlink(missing_ok=True)
+            try:
+                job.rmdir()
+            except OSError:
+                pass
+    return 0
 
 class CollectionDeadline(Exception):
     """Not an OSError: a job deadline must escape per-file I/O recovery."""
@@ -226,6 +330,12 @@ class JobProgress:
 
 
 def failure_code(error):
+    if isinstance(error, StorageError):
+        return error.code
+    if io_errno(error) == errno.ENOSPC:
+        return "DISK_SPACE"
+    if io_errno(error) == getattr(errno, "EDQUOT", -1):
+        return "DISK_QUOTA"
     if isinstance(error, CollectionDeadline):
         return error.code
     if isinstance(error, MemoryError):
@@ -1313,11 +1423,19 @@ def collect(settings, now, progress=None):
 
 
 def main():
+    if len(sys.argv) == 2 and sys.argv[1] == "--boot-clean":
+        try:
+            return clean_boot_reports()
+        except (OSError, ValueError):
+            return 1
     if len(sys.argv) != 2 or not re.fullmatch(r"[a-f0-9]{32}", sys.argv[1]):
         return 2
     os.umask(0o077)
     job = BASE / ("job-" + sys.argv[1])
-    if BASE.is_symlink() or job.is_symlink() or not job.is_dir():
+    try:
+        if not private_directory(BASE) or not private_directory(job):
+            return 2
+    except OSError:
         return 2
     started = int(time.time())
     worker, owns_job, progress, report = None, False, None, None
@@ -1337,6 +1455,8 @@ def main():
             return 2
         progress = JobProgress(job, started)
         progress.mark("starting", force=True)
+        with (job / "status.reserve").open("xb") as reserve:
+            reserve.write(b"\0" * STATUS_RESERVE)
         settings = json.loads(small_file(job / "request.json", 4096))
         if type(settings.get("days")) is not int or not 1 <= settings["days"] <= 14 or any(
                 type(settings.get(key)) is not bool for key in ("network", "web", "runtime")):
@@ -1354,12 +1474,17 @@ def main():
         signal.alarm(75)
         report = collect(settings, started, progress)
         progress.completed_totals(report)
-        progress.mark("write_report", source="none", force=True)
-        atomic(job / "report.json", report)
+        write_report(job, report, progress)
+        cleanup_temporaries(job)
+        progress.mark("final_status", source="none", force=True)
         progress.finish("complete", partial=report["partial"])
         return 0
     except Exception as error:
-        code, line = failure_code(error), collector_error_line(error)
+        code, line, number = failure_code(error), collector_error_line(error), io_errno(error)
+        if owns_job:
+            cleanup_temporaries(job)
+        if progress is not None and number:
+            progress.data["io_errno"] = number
         # Release collected data and exception frames before a bounded failure
         # write. Never persist exception text, traceback, paths or private context.
         error.__traceback__ = None
@@ -1376,7 +1501,8 @@ def main():
     finally:
         signal.alarm(0)
         if owns_job:
-            for name in ("request.json", "request.json.tmp", "report.json.tmp", "status.json.tmp"):
+            cleanup_temporaries(job)
+            for name in ("request.json",):
                 try:
                     (job / name).unlink(missing_ok=True)
                 except OSError:

@@ -58,6 +58,14 @@ Rule configuration：
 
 ### Debug information
 
+New Debug jobs use the private `/tmp/mwddns-debug` directory, not the small
+`/var/run` filesystem. Reports remain temporary: boot cleanup removes owned jobs,
+and the 24-hour / three-job retention policy still applies. Older reports in
+`/var/run/mwddns/debug` remain accessible for download and deletion until expiry.
+Collection requires room for the bounded report plus a 1 MiB safety margin;
+insufficient space is reported explicitly without changing DNS rules or credentials.
+
+
 Open **Services > Multi-WAN DDNS > Debug information**. Choose the number of
 recent days (default **3**, range 1-14), select optional network/WebGUI/runtime
 sources, and click **Save and collect**. This reads existing logs; it does not

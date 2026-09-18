@@ -16,6 +16,20 @@
  */
 
 return [
+    'Encoding report' => '正在編碼報告',
+    'Checking report storage space' => '正在檢查報告儲存空間',
+    'Flushing report to storage' => '正在刷新報告至儲存裝置',
+    'Publishing report file' => '正在發布報告檔案',
+    'Recording completion status' => '正在記錄完成狀態',
+    'Insufficient free space for the report and safety reserve.' => '剩餘空間不足以容納報告及安全預留空間。',
+    'Report storage quota was exceeded.' => '報告儲存配額已耗盡。',
+    'Debug storage has insufficient free space. Free space in /tmp and retry.' => 'Debug 儲存空間不足。請釋放 /tmp 空間後重試。',
+    'Encoded report bytes' => '編碼後報告位元組數',
+    'Report bytes written' => '已寫入報告位元組數',
+    'Storage free bytes at checkpoint' => '檢查點剩餘儲存位元組數',
+    'Required free storage bytes' => '所需剩餘儲存位元組數',
+    'Storage safety reserve bytes' => '儲存安全預留位元組數',
+    'Recorded I/O error number' => '已記錄的輸入輸出錯誤編號',
     'Another operation is running. Wait for it to finish and upload again.' => '另一個操作正在執行，請等候完成後重新上傳。',
     'Same-version installation and downgrades are not allowed.' => '不允許安裝相同版本或降級。',
     'Use a versioned release ZIP with an upgrade manifest, not a source-code ZIP.' => '請使用附版本號及升級清單的發佈 ZIP，不要使用原始碼 ZIP。',
