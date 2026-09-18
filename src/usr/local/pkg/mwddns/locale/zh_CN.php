@@ -10,6 +10,20 @@
  */
 
 return [
+    'Encoding report' => '正在编码报告',
+    'Checking report storage space' => '正在检查报告存储空间',
+    'Flushing report to storage' => '正在刷新报告到存储设备',
+    'Publishing report file' => '正在发布报告文件',
+    'Recording completion status' => '正在记录完成状态',
+    'Insufficient free space for the report and safety reserve.' => '剩余空间不足以容纳报告及安全预留空间。',
+    'Report storage quota was exceeded.' => '报告存储配额已耗尽。',
+    'Debug storage has insufficient free space. Free space in /tmp and retry.' => 'Debug 存储空间不足。请释放 /tmp 空间后重试。',
+    'Encoded report bytes' => '编码后报告字节数',
+    'Report bytes written' => '已写入报告字节数',
+    'Storage free bytes at checkpoint' => '检查点剩余存储字节数',
+    'Required free storage bytes' => '所需剩余存储字节数',
+    'Storage safety reserve bytes' => '存储安全预留字节数',
+    'Recorded I/O error number' => '已记录的输入输出错误编号',
     'Another operation is running. Wait for it to finish and upload again.' => '另一个操作正在运行，请等待完成后重新上传。',
     'Same-version installation and downgrades are not allowed.' => '不允许安装相同版本或降级。',
     'Use a versioned release ZIP with an upgrade manifest, not a source-code ZIP.' => '请使用带版本号及升级清单的发布 ZIP，不要使用源代码 ZIP。',

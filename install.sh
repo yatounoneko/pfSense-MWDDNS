@@ -34,7 +34,7 @@ WWW_WIDGET="/usr/local/www/widgets/widgets/mwddns.widget.php"
 CRON_SCRIPT="/usr/local/bin/mwddns_cron.php"
 WATCHER_PY="/usr/local/bin/mwddns_gateway_watcher.py"
 WATCHER_RC="/usr/local/etc/rc.d/mwddns_watcher"
-PKG_VERSION="1.1.1"
+PKG_VERSION="1.1.2"
 MWDDNS_METADATA_DIR="/var/run/mwddns"
 
 # ---------------------------------------------------------------------------

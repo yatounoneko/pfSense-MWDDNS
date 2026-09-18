@@ -3,6 +3,21 @@
 Release notes and maintenance history for pfSense-MWDDNS.
 See [README.md](README.md) for installation, usage and current operational guidance.
 
+## 1.1.2 release
+
+- Store new Debug reports in private `/tmp/mwddns-debug` instead of the small
+  pfSense `/var/run` filesystem. Keep legacy reports downloadable/deletable,
+  the three-job/24-hour bounds and boot-time removal of temporary reports.
+- Check report storage capacity before collection and before writing, retaining
+  a 1 MiB safety margin. Clean failed temporary output before recording failure;
+  reserve a small status-write allocation and distinguish space/quota failures.
+- Record encoding, space-check, write, flush, publication and final-status stages,
+  bounded byte counters and numeric I/O errors without private paths or messages.
+- Include the new Debug store in upgrade locking, backup-before-reset and rollback.
+  Preserve rules, credentials, DNS-provider features and the existing ZIP upgrade
+  format. Existing 1.1.1 installations can use GitHub check/download then confirm
+  a preserve-data upgrade; manual ZIP upload remains supported.
+
 ## 1.1.1 release
 
 - The upgrade page can check GitHub's latest stable release, download its exact
