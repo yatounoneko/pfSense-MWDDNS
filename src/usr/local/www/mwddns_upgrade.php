@@ -150,7 +150,7 @@ include('head.inc');
 <?php if ($job !== ''): ?>
     <div class="upgrade-actions">
         <a class="btn btn-default" href="/mwddns_upgrade.php?job=<?= $job ?>"><?= mwddns_upgrade_label('Refresh status') ?></a>
-<?php if (!in_array($status['state'], ['checking', 'queued', 'running', 'missing'], true)): ?>
+<?php if (!in_array($status['state'], ['checking', 'queued', 'running'], true)): ?>
         <form method="post" action="/mwddns_upgrade.php">
             <?= mwddns_csrf_input() ?><input type="hidden" name="job" value="<?= $job ?>">
             <button class="btn btn-default" name="action" value="discard"><?= mwddns_upgrade_label('Discard temporary upload (keep backup)') ?></button>

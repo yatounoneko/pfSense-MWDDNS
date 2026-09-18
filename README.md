@@ -56,7 +56,7 @@ Rule configuration：
 
 ## Repository layout
 
-### Debug information (1.0.11)
+### Debug information (1.0.12)
 
 Open **Services > Multi-WAN DDNS > Debug information**. Choose the number of
 recent days (default **3**, range 1-14), select optional network/WebGUI/runtime
@@ -140,6 +140,18 @@ These are resource bounds, not a promise that all three days fit. Check
 interpreting results. Offline regressions do not certify on-device pfSense
 behavior. Upgrade using the same `sh install.sh` flow without uninstalling;
 existing rules, credentials and debug preferences are retained.
+
+### 1.0.12 maintenance update
+
+- Show **Discard temporary upload (keep backup)** for jobs whose status file is
+  missing or malformed. The action still requires an authenticated administrator,
+  a valid POST/CSRF token and the existing worker lock/path checks.
+- Checking, queued and running jobs remain protected. Cleanup affects temporary
+  upload files only, never the persistent upgrade backup.
+- Existing 1.0.10/1.0.11 installations can upload the versioned 1.0.12 release ZIP.
+  If an older installation already has all three slots blocked by unreadable
+  jobs, use the original manual installation flow without uninstalling; the
+  newer cleanup page is available only after that installation completes.
 
 ### 1.0.11 maintenance update
 
