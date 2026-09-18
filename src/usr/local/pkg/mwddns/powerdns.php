@@ -30,8 +30,16 @@ function mwddns_powerdns_fields(): array
             'label'       => mwddns_t('API Server URL'),
             'type'        => 'text',
             'required'    => true,
-            'placeholder' => mwddns_t('e.g. http://192.168.1.1:8081'),
+            'placeholder' => 'https://dns.example.com',
             'help'        => mwddns_t('Base URL of the PowerDNS HTTP API, without a trailing slash. Include the port if non-standard (default 8081 for authoritative server).'),
+        ],
+        [
+            'key'         => 'pdns_scheme',
+            'label'       => mwddns_t('Connection protocol'),
+            'type'        => 'select',
+            'required'    => true,
+            'options'     => ['https' => 'HTTPS', 'http' => 'HTTP'],
+            'help'        => mwddns_t('Choose HTTP or HTTPS. HTTP sends the API key and DNS changes without encryption; use a trusted protected connection. HTTPS verifies the server certificate.'),
         ],
         [
             'key'         => 'pdns_api_key',
@@ -60,13 +68,58 @@ function mwddns_powerdns_fields(): array
     ];
 }
 
+function mwddns_pdns_remote_http(string $url): bool
+{
+    $parts = parse_url($url);
+    if (!is_array($parts) || strtolower($parts['scheme'] ?? '') !== 'http') {
+        return false;
+    }
+    $host = strtolower(trim($parts['host'] ?? '', '[]'));
+    $loopback = in_array($host, ['localhost', '::1'], true) ||
+        (filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) &&
+            strncmp($host, '127.', 4) === 0);
+    return !$loopback;
+}
+
+/** Legacy rules derive the scheme from their URL without rewriting config.xml. */
+function mwddns_pdns_normalize_transport(array $rule): array
+{
+    if (isset($rule['pdns_scheme']) && in_array($rule['pdns_scheme'], ['http', 'https'], true)) {
+        $url = trim($rule['pdns_url'] ?? '');
+        if ($url !== '') {
+            $rule['pdns_url'] = $rule['pdns_scheme'] . '://' .
+                preg_replace('#^[a-z][a-z0-9+.-]*://#i', '', $url);
+        }
+    }
+    return $rule;
+}
+
+/** The administrator chooses HTTP/HTTPS; neither permits unsafe URL/header syntax. */
+function mwddns_pdns_transport_error(array $rule): string
+{
+    if (isset($rule['pdns_scheme']) && !in_array($rule['pdns_scheme'], ['http', 'https'], true)) {
+        return 'Choose HTTP or HTTPS.';
+    }
+    $rule = mwddns_pdns_normalize_transport($rule);
+    $url = trim($rule['pdns_url'] ?? '');
+    $parts = parse_url($url);
+    if (!is_array($parts) || empty($parts['host']) ||
+        !in_array(strtolower($parts['scheme'] ?? ''), ['http', 'https'], true) ||
+        isset($parts['user']) || isset($parts['pass']) || isset($parts['query']) ||
+        isset($parts['fragment']) || preg_match('/[\x00-\x20\x7f]/', $url)) {
+        return 'PowerDNS URL must be an HTTP(S) base URL without credentials, query or fragment.';
+    }
+    if (preg_match('/[\x00-\x1f\x7f]/', $rule['pdns_api_key'] ?? '')) {
+        return 'PowerDNS API key must not contain control characters.';
+    }
+    return '';
+}
+
 function mwddns_powerdns_validate(array $post, array &$errors): bool
 {
-    $url = trim($post['pdns_url'] ?? '');
-    if ($url === '') {
-        $errors[] = mwddns_t('PowerDNS API Server URL is required.');
-    } elseif (!preg_match('#^https?://.+#i', $url)) {
-        $errors[] = mwddns_t('PowerDNS API Server URL must start with http:// or https://.');
+    $transportError = mwddns_pdns_transport_error($post);
+    if ($transportError !== '') {
+        $errors[] = mwddns_t($transportError);
     }
     if (trim($post['pdns_api_key'] ?? '') === '') {
         $errors[] = mwddns_t('PowerDNS API Key is required.');
@@ -87,6 +140,7 @@ function mwddns_powerdns_validate(array $post, array &$errors): bool
  */
 function mwddns_powerdns_update(array $ipsByType, array $rule): array
 {
+    $rule = mwddns_pdns_normalize_transport($rule);
     $baseUrl  = rtrim(trim($rule['pdns_url']      ?? ''), '/');
     $apiKey   = trim($rule['pdns_api_key']   ?? '');
     $serverId = trim($rule['pdns_server_id'] ?? '') ?: 'localhost';
@@ -96,6 +150,14 @@ function mwddns_powerdns_update(array $ipsByType, array $rule): array
 
     if ($baseUrl === '' || $apiKey === '' || $zone === '') {
         return ['ok' => false, 'message' => 'PowerDNS URL, API key, or zone is missing.', 'actions' => []];
+    }
+
+    $transportError = mwddns_pdns_transport_error($rule);
+    if ($transportError !== '') {
+        return ['ok' => false, 'message' => $transportError, 'actions' => []];
+    }
+    if (mwddns_pdns_remote_http($baseUrl)) {
+        mwddns_log('PowerDNS HTTP selected: API key and DNS changes are not encrypted. Use HTTPS or a protected connection.', LOG_WARNING);
     }
 
     // PowerDNS zone IDs use a trailing dot
@@ -163,12 +225,19 @@ function mwddns_pdns_request(string $method, string $url, string $apiKey, ?array
         'Accept: application/json',
     ];
 
+    $timeoutMs = mwddns_request_timeout_ms();
+    if ($timeoutMs <= 0) {
+        return ['ok' => false, 'http' => 0, 'data' => [], 'error' => 'MWDDNS request deadline exceeded.'];
+    }
     $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_HTTPHEADER     => $headers,
-        CURLOPT_TIMEOUT        => 30,
+        CURLOPT_TIMEOUT_MS     => $timeoutMs,
+        CURLOPT_CONNECTTIMEOUT_MS => min(5000, $timeoutMs),
+        CURLOPT_FOLLOWLOCATION => false,
         CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
         CURLOPT_CUSTOMREQUEST  => strtoupper($method),
     ]);
 
@@ -179,7 +248,7 @@ function mwddns_pdns_request(string $method, string $url, string $apiKey, ?array
     $raw  = curl_exec($ch);
     $http = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $err  = curl_error($ch);
-    curl_close($ch);
+    unset($ch); // PHP 8 uses CurlHandle objects; curl_close is deprecated in 8.5.
 
     if ($err) {
         return ['ok' => false, 'http' => 0, 'data' => [], 'error' => $err];

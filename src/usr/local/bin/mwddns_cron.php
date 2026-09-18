@@ -18,11 +18,26 @@ require_once('/etc/inc/config.inc');
 require_once('/usr/local/pkg/mwddns.inc');
 
 // Load pfSense config
-$config = parse_config(true);
+try {
+    mwddns_reload_config();
+} catch (Throwable $e) {
+    mwddns_log($e->getMessage(), LOG_ERR);
+    fwrite(STDERR, "MWDDNS: configuration initialization failed; DNS was not changed.\n");
+    exit(1);
+}
 $targetIf = $argv[1] ?? null;
 
+$rules = mwddns_get_rules();
 $results = mwddns_update_all($targetIf);
-$rules   = mwddns_get_rules();
+// Keep the per-rule logging below, then report partial failures to the caller.
+register_shutdown_function(static function () use ($results): void {
+    foreach ($results as $result) {
+        if (empty($result['ok'])) {
+            exit(1);
+        }
+    }
+});
+// Keep the original rule labels even if a later operation reorders configuration.
 
 foreach ($results as $id => $res) {
     $name   = $rules[$id]['name'] ?? "Rule #{$id}";

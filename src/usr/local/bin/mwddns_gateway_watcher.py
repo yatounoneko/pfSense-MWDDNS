@@ -41,6 +41,9 @@ scripts have been removed.
 import argparse
 import glob
 import os
+import math
+import re
+import socket
 import subprocess
 import time
 import xml.etree.ElementTree as ET
@@ -74,12 +77,24 @@ class PfSensePlatform(BasePlatform):
                 "latencyhigh": gateways_config.findtext("latencyhigh", "500") if gateways_config is not None else "500",
                 "losshigh": gateways_config.findtext("losshigh", "20") if gateways_config is not None else "20",
             }
+            def threshold(value, default, maximum=float("inf")):
+                try:
+                    number = float(value)
+                    return number if math.isfinite(number) and 0 < number <= maximum else default
+                except (TypeError, ValueError):
+                    return default
+
+            defaults = {
+                "latencyhigh": threshold(defaults["latencyhigh"], 500),
+                "losshigh": threshold(defaults["losshigh"], 20, 100),
+            }
+            thresholds[""] = defaults
             for gw_item in root.findall(".//gateways/gateway_item"):
                 gw_name = gw_item.findtext("name")
                 if gw_name:
                     thresholds[gw_name] = {
-                        "latencyhigh": int(gw_item.findtext("latencyhigh", defaults["latencyhigh"])),
-                        "losshigh": int(gw_item.findtext("losshigh", defaults["losshigh"])),
+                        "latencyhigh": threshold(gw_item.findtext("latencyhigh"), defaults["latencyhigh"]),
+                        "losshigh": threshold(gw_item.findtext("losshigh"), defaults["losshigh"], 100),
                     }
         except Exception as e:
             print(f"[{time.ctime()}] WATCHER ERROR: Could not parse gateway monitoring thresholds: {e}")
@@ -87,36 +102,46 @@ class PfSensePlatform(BasePlatform):
 
     def get_gateway_statuses(self, thresholds: Dict[str, Dict[str, int]]) -> Dict[str, str]:
         statuses: Dict[str, str] = {}
-        try:
-            dpinger_sockets = glob.glob("/var/run/dpinger_*.sock")
-            for socket_path in dpinger_sockets:
-                basename = os.path.basename(socket_path)
-                gateway_name = ""
-                try:
-                    name_part = basename.replace("dpinger_", "", 1)
-                    gateway_name = name_part.split("~", 1)[0]
-                except IndexError:
-                    continue
-                status = "down"
-                try:
-                    result = subprocess.run(["cat", socket_path], capture_output=True, text=True, timeout=2)
-                    socket_output = result.stdout.strip()
-                    parts = socket_output.split()
-                    if len(parts) >= 4:
-                        live_latency_us = int(parts[1])
-                        live_loss_pct = int(parts[3])
-                        gw_thresholds = thresholds.get(gateway_name, {})
-                        latency_high_ms = gw_thresholds.get("latencyhigh", 500)
-                        loss_high_pct = gw_thresholds.get("losshigh", 20)
-                        if (live_latency_us / 1000) < latency_high_ms and live_loss_pct < loss_high_pct:
-                            status = "online"
-                except Exception:
-                    pass
+        for socket_path in glob.glob("/var/run/dpinger_*.sock"):
+            fallback = os.path.basename(socket_path)[8:].split("~", 1)[0]
+            gateway_name = fallback.removesuffix(".sock")
+            status = "unknown"
+            try:
+                deadline = time.monotonic() + 2
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                    connection.settimeout(2)
+                    connection.connect(socket_path)
+                    data = bytearray()
+                    while b"\n" not in data:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0 or len(data) >= 4096:
+                            raise ValueError("Incomplete dpinger report")
+                        connection.settimeout(remaining)
+                        chunk = connection.recv(4096 - len(data))
+                        if not chunk:
+                            break
+                        data.extend(chunk)
+                parts = data.decode("ascii").strip().split()
+                if len(data) >= 4096 or len(parts) != 4 or not re.fullmatch(r"[A-Za-z0-9_.:-]+", parts[0]):
+                    raise ValueError("Invalid dpinger report")
+                latency_us, deviation_us, loss_pct = map(float, parts[1:])
+                if not all(math.isfinite(value) and value >= 0 for value in (latency_us, deviation_us, loss_pct)):
+                    raise ValueError("Invalid dpinger measurements")
+                if loss_pct > 100:
+                    raise ValueError("Invalid packet loss")
+                gateway_name = parts[0]  # Also handles pfSense's hashed socket names.
+                limits = thresholds.get(gateway_name, thresholds.get("", {}))
+                latency_high = limits.get("latencyhigh", 500)
+                loss_high = limits.get("losshigh", 20)
+                status = "online" if latency_us / 1000 < latency_high and loss_pct < loss_high else "down"
+            except (OSError, ValueError, UnicodeError):
+                # A missing/unreadable socket is not evidence that a WAN is down.
+                pass
+            if gateway_name in statuses and statuses[gateway_name] != status:
+                statuses[gateway_name] = "unknown"
+            else:
                 statuses[gateway_name] = status
-        except Exception as e:
-            print(f"[{time.ctime()}] WATCHER ERROR: Could not retrieve gateway statuses from dpinger sockets: {e}")
         return statuses
-
 
 class GatewayWatcher:
     def __init__(self, platform: BasePlatform, updater_script: str, poll_interval: int = POLL_INTERVAL_SECONDS):
@@ -130,7 +155,7 @@ class GatewayWatcher:
             print(f"[{time.ctime()}] WATCHER WARNING: updater script {self.updater_script} not found; skipping.")
             return
         try:
-            subprocess.run([PHP_BIN, self.updater_script], timeout=120, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run([PHP_BIN, self.updater_script], timeout=120, check=True, stdout=subprocess.DEVNULL)
             print(f"[{time.ctime()}] Triggered MWDDNS updater (gateway state change).")
         except Exception as e:
             print(f"[{time.ctime()}] WATCHER ERROR: Failed to execute updater: {e}")

@@ -15,7 +15,7 @@
  *                              Only keys for configured/available record types are present.
  *                              Returns ['ok'=>bool, 'message'=>string, 'actions'=>[…]]
  *
- * Requires: pfSense 2.7+ (PHP 8.x, FreeBSD 14.x)
+ * Uses capability-based pfSense config/gateway APIs; see the compatibility report.
  */
 
 define('MWDDNS_CONFIG_KEY',   'mwddns');
@@ -23,6 +23,7 @@ define('MWDDNS_PROVIDER_DIR', '/usr/local/pkg/mwddns');
 define('MWDDNS_CRON_CMD',     '/usr/local/bin/php /usr/local/bin/mwddns_cron.php');
 define('MWDDNS_CRON_MINUTE',  '*/5');
 define('MWDDNS_DNS_CACHE_TTL', 60);
+define('MWDDNS_OBSERVATION_TTL', 360);
 define('MWDDNS_DNS_CACHE_DIR', '/var/run/mwddns');
 define('MWDDNS_METADATA_FILE', MWDDNS_DNS_CACHE_DIR . '/metadata.json');
 define('MWDDNS_WATCHER_RC',   '/usr/local/etc/rc.d/mwddns_watcher');
@@ -31,6 +32,34 @@ define('MWDDNS_WATCHER_RCVAR','mwddns_watcher_enable');
 /**
  * Write a line to syslog with a consistent prefix.
  */
+/**
+ * Reload through pfSense's supported API without assigning its boolean return
+ * value to $config. Older installations retain the legacy API fallback.
+ */
+function mwddns_reload_config(): void
+{
+    global $config;
+    if (function_exists('config_read_file')) {
+        if (!config_read_file(false, false)) {
+            throw new RuntimeException('MWDDNS: pfSense configuration reload failed.');
+        }
+    } elseif (function_exists('parse_config')) {
+        $config = parse_config(true);
+    } else {
+        throw new RuntimeException('MWDDNS: no supported pfSense configuration API.');
+    }
+    if (!is_array($config) || empty($config)) {
+        throw new RuntimeException('MWDDNS: refusing to operate with an empty configuration.');
+    }
+}
+
+/** Private runtime files never contain provider credentials. */
+function mwddns_runtime_dir(): bool
+{
+    return is_dir(MWDDNS_DNS_CACHE_DIR) ||
+        (@mkdir(MWDDNS_DNS_CACHE_DIR, 0700, true) || is_dir(MWDDNS_DNS_CACHE_DIR));
+}
+
 function mwddns_log(string $message, int $level = LOG_INFO): void
 {
     @syslog($level, '[MWDDNS] ' . $message);
@@ -88,6 +117,79 @@ function mwddns_t(string $key): string
         }
     }
     return $strings[$key] ?? $key;
+}
+
+/** Theme-scoped geometry only; pfSense retains control of palette and typography. */
+function mwddns_gui_styles(): string
+{
+    return <<<'CSS'
+<style>
+.mwddns-page .panel,
+.mwddns-page .panel-heading,
+.mwddns-page .panel-body,
+.mwddns-page .panel-footer,
+.mwddns-page .modal-content,
+.mwddns-page .btn,
+.mwddns-page .form-control,
+.mwddns-page .input-group-addon,
+.mwddns-page .alert,
+.mwddns-page .table-responsive,
+.mwddns-page .label,
+.mwddns-page .badge,
+.mwddns-page code,
+.mwddns-page pre,
+.mwddns-page dialog { border-radius: 0 !important; }
+.mwddns-page [hidden] { display: none !important; }
+.mwddns-page .mwddns-rule-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    white-space: nowrap;
+    vertical-align: middle;
+}
+.mwddns-page .mwddns-rule-delete-form {
+    display: inline-flex;
+    align-items: center;
+    margin: 0;
+    padding: 0;
+}
+.mwddns-page .mwddns-rule-copy,
+.mwddns-page .mwddns-rule-edit,
+.mwddns-page .mwddns-delete-rule {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 20px;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    margin: 0;
+    font-size: 18px;
+    line-height: 1;
+    vertical-align: middle;
+}
+.mwddns-page .mwddns-rule-actions .fa-regular,
+.mwddns-page .mwddns-rule-actions .fa-solid {
+    display: block;
+    font-size: 18px;
+    line-height: 1;
+}
+.mwddns-page .mwddns-delete-rule {
+    appearance: none;
+    color: #d9534f;
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+}
+.mwddns-page .mwddns-delete-rule:hover { color: #c9302c; }
+.mwddns-page .mwddns-rule-copy:focus-visible,
+.mwddns-page .mwddns-rule-edit:focus-visible,
+.mwddns-page .mwddns-delete-rule:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: 4px;
+}
+</style>
+CSS;
 }
 
 /**
@@ -203,6 +305,54 @@ function mwddns_provider_name(string $key): string
  * that callers (UI, widget) always see up-to-date status without requiring
  * those fields to live in config.xml.
  */
+/** Fingerprints survive reordering without adding IDs or secrets to backups. */
+function mwddns_rule_definition(array $rule): array
+{
+    unset($rule['last_updated'], $rule['last_status']);
+    ksort($rule);
+    return $rule;
+}
+
+function mwddns_rule_key(array $rule): string
+{
+    return hash('sha256', json_encode(mwddns_rule_definition($rule), JSON_THROW_ON_ERROR));
+}
+
+function mwddns_rules_revision(array $rules): string
+{
+    return hash('sha256', json_encode(array_values(array_map('mwddns_rule_definition', $rules)), JSON_THROW_ON_ERROR));
+}
+
+/** One nonblocking lock covers rule saves, deletes and complete DNS updates. */
+function mwddns_with_operation_lock(callable $operation)
+{
+    if (!mwddns_runtime_dir()) {
+        throw new RuntimeException('Cannot create the MWDDNS runtime directory.');
+    }
+    $lock = @fopen(MWDDNS_DNS_CACHE_DIR . '/updates.lock', 'c');
+    if ($lock === false) {
+        throw new RuntimeException('Cannot open the MWDDNS operation lock.');
+    }
+    try {
+        if (!flock($lock, LOCK_EX | LOCK_NB)) {
+            throw new RuntimeException('Another MWDDNS operation is running. Please retry later.');
+        }
+        return $operation();
+    } finally {
+        flock($lock, LOCK_UN);
+        fclose($lock);
+    }
+}
+
+/** Shared network budget: never pass zero (unlimited) to CURLOPT_TIMEOUT_MS. */
+function mwddns_request_timeout_ms(): int
+{
+    $remaining = isset($GLOBALS['mwddns_request_deadline'])
+        ? (int)floor(($GLOBALS['mwddns_request_deadline'] - microtime(true)) * 1000)
+        : 30000;
+    return max(0, min(30000, $remaining));
+}
+
 function mwddns_get_rules(): array
 {
     global $config;
@@ -219,9 +369,10 @@ function mwddns_get_rules(): array
     // Overlay metadata from the state file (does not touch config.xml)
     $metadata = mwddns_get_metadata();
     foreach ($rules as $id => &$rule) {
-        if (isset($metadata[$id])) {
-            $rule['last_updated'] = $metadata[$id]['last_updated'] ?? ($rule['last_updated'] ?? '');
-            $rule['last_status']  = $metadata[$id]['last_status']  ?? ($rule['last_status']  ?? '');
+        $key = mwddns_rule_key($rule);
+        if (isset($metadata[$key]) && is_array($metadata[$key])) {
+            $rule['last_updated'] = $metadata[$key]['last_updated'] ?? '';
+            $rule['last_status'] = $metadata[$key]['last_status'] ?? '';
         }
     }
     unset($rule);
@@ -238,6 +389,22 @@ function mwddns_get_rule(int $id): ?array
     return $rules[$id] ?? null;
 }
 
+/** Match rule names without surrounding whitespace or ASCII case differences. */
+function mwddns_rule_name_key(string $name): string
+{
+    return strtolower(trim($name));
+}
+
+function mwddns_rule_name_counts(array $rules): array
+{
+    $counts = [];
+    foreach ($rules as $rule) {
+        $key = mwddns_rule_name_key((string)($rule['name'] ?? ''));
+        if ($key !== '') { $counts[$key] = ($counts[$key] ?? 0) + 1; }
+    }
+    return $counts;
+}
+
 /**
  * Persist the full rules array back into pfSense config.xml.
  *
@@ -247,53 +414,56 @@ function mwddns_get_rule(int $id): ?array
  * already stored, preventing spurious write_config() calls that would
  * otherwise trigger the Auto Configuration Backup plugin every 5 minutes.
  *
- * When the rule definitions do change (add / edit / delete via UI), the
- * metadata state file is cleared so stale index-keyed entries cannot be
- * associated with the wrong rule after a reindex.
+ * A revision check and the shared operation lock prevent stale GUI writes.
+ * Fingerprint-keyed metadata cannot migrate to a different rule on reindex.
  */
-function mwddns_save_rules(array $rules): void
+function mwddns_save_rules(array $rules, ?string $expectedRevision = null): void
 {
-    global $config;
-
-    // Helper: strip volatile metadata fields from a single rule entry.
-    $stripMeta = static function (array $rule): array {
-        unset($rule['last_updated'], $rule['last_status']);
-        return $rule;
-    };
-
-    $configRules = array_values(array_map($stripMeta, $rules));
-
-    // Normalize the existing stored rules for comparison.
-    $existing = $config[MWDDNS_CONFIG_KEY]['rule'] ?? [];
-    if (isset($existing['name'])) {
-        $existing = [$existing];
-    }
-    $existingNorm = array_values(array_map($stripMeta, $existing));
-
-    // Only call write_config() when rule definitions actually changed.
-    if ($configRules === $existingNorm) {
-        return;
-    }
-
-    $config[MWDDNS_CONFIG_KEY]['rule'] = $configRules;
-    write_config('MWDDNS: rules saved');
-
-    // Clear the metadata state file; stale index-keyed entries would map to
-    // the wrong rules after a reindex caused by deletion or insertion.
-    // The cron job will repopulate the file within the next 5 minutes.
-    mwddns_save_metadata([]);
+    $expectedRevision = $expectedRevision ?? mwddns_rules_revision(mwddns_get_rules());
+    $definitions = array_values(array_map('mwddns_rule_definition', $rules));
+    mwddns_with_operation_lock(static function () use ($definitions, $expectedRevision): void {
+        global $config;
+        mwddns_reload_config();
+        $current = mwddns_get_rules();
+        if (!hash_equals(mwddns_rules_revision($current), $expectedRevision)) {
+            throw new RuntimeException('Configuration changed. Reload the page before saving.');
+        }
+        // Enforce name uniqueness under the same lock as the revision/write.
+        // Legacy duplicates may be retained or reduced, never increased.
+        $currentNames = mwddns_rule_name_counts($current);
+        foreach (mwddns_rule_name_counts($definitions) as $nameKey => $count) {
+            if ($count > max(1, $currentNames[$nameKey] ?? 0)) {
+                throw new RuntimeException('Rule name already exists. Choose a different name.');
+            }
+        }
+        if (mwddns_rules_revision($definitions) === mwddns_rules_revision($current)) {
+            return;
+        }
+        $before = $config;
+        try {
+            $config[MWDDNS_CONFIG_KEY]['rule'] = $definitions;
+            $saved = write_config('MWDDNS: rules saved');
+            if ($saved === false || $saved === -1) {
+                throw new RuntimeException('pfSense rejected the configuration write.');
+            }
+        } catch (Throwable $e) {
+            $config = $before; // Never issue a DNS update using an unsaved definition.
+            mwddns_log('Configuration write failed: ' . get_class($e), LOG_ERR);
+            throw new RuntimeException('Configuration could not be saved. No DNS update was started.', 0, $e);
+        }
+        // Metadata uses definition fingerprints; reindexing cannot mislabel rules.
+    });
 }
 
-/**
- * Delete a rule by index.
- */
-function mwddns_delete_rule(int $id): void
+function mwddns_delete_rule(int $id, ?string $expectedRevision = null): void
 {
     $rules = mwddns_get_rules();
-    if (isset($rules[$id])) {
-        array_splice($rules, $id, 1);
-        mwddns_save_rules($rules);
+    $expectedRevision = $expectedRevision ?? mwddns_rules_revision($rules);
+    if (!isset($rules[$id])) {
+        throw new RuntimeException('Rule no longer exists. Reload the page.');
     }
+    array_splice($rules, $id, 1);
+    mwddns_save_rules($rules, $expectedRevision);
 }
 
 /* =========================================================
@@ -307,7 +477,7 @@ function mwddns_delete_rule(int $id): void
 
 /**
  * Read the full metadata map from the state file.
- * Returns an array keyed by rule index, each entry having
+ * Returns an array keyed by definition fingerprint, each entry having
  * 'last_updated' and 'last_status'.  Returns [] when no file exists.
  */
 function mwddns_get_metadata(): array
@@ -337,22 +507,44 @@ function mwddns_get_metadata(): array
  */
 function mwddns_save_metadata(array $metadata): void
 {
-    if (!is_dir(MWDDNS_DNS_CACHE_DIR)) {
-        if (!mkdir(MWDDNS_DNS_CACHE_DIR, 0700, true) && !is_dir(MWDDNS_DNS_CACHE_DIR)) {
-            mwddns_log('Failed to create metadata directory: ' . MWDDNS_DNS_CACHE_DIR, LOG_WARNING);
-            return;
-        }
-        chmod(MWDDNS_DNS_CACHE_DIR, 0700);
+    mwddns_mutate_metadata(static fn(array $old): array => $metadata);
+}
+
+/** Serialize read/merge/write and publish JSON atomically for GUI readers. */
+function mwddns_mutate_metadata(callable $mutate): void
+{
+    if (!mwddns_runtime_dir()) {
+        mwddns_log('Cannot create metadata directory.', LOG_WARNING);
+        return;
     }
-    $written = file_put_contents(
-        MWDDNS_METADATA_FILE,
-        json_encode($metadata, JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT),
-        LOCK_EX
-    );
-    if ($written === false) {
-        mwddns_log('Failed to write metadata file: ' . MWDDNS_METADATA_FILE, LOG_WARNING);
+    $lock = @fopen(MWDDNS_DNS_CACHE_DIR . '/metadata.lock', 'c');
+    if ($lock === false) {
+        mwddns_log('Cannot open metadata lock.', LOG_WARNING);
+        return;
+    }
+    $tmp = false;
+    try {
+        if (!flock($lock, LOCK_EX)) {
+            throw new RuntimeException('Cannot acquire metadata lock.');
+        }
+        $json = json_encode($mutate(mwddns_get_metadata()),
+            JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR);
+        $tmp = tempnam(MWDDNS_DNS_CACHE_DIR, '.metadata-');
+        if ($tmp === false || file_put_contents($tmp, $json) === false ||
+            !rename($tmp, MWDDNS_METADATA_FILE)) {
+            throw new RuntimeException('Cannot publish metadata.');
+        }
+    } catch (Throwable $e) {
+        mwddns_log('Metadata write failed: ' . $e->getMessage(), LOG_WARNING);
+    } finally {
+        if ($tmp !== false && file_exists($tmp)) {
+            @unlink($tmp);
+        }
+        flock($lock, LOCK_UN);
+        fclose($lock);
     }
 }
+
 
 /**
  * Return the metadata entry for a single rule by its array index.
@@ -360,18 +552,29 @@ function mwddns_save_metadata(array $metadata): void
  */
 function mwddns_get_rule_metadata(int $id): array
 {
+    $rule = mwddns_get_rule($id);
     $metadata = mwddns_get_metadata();
-    return $metadata[$id] ?? [];
+    return $rule === null ? [] : ($metadata[mwddns_rule_key($rule)] ?? []);
 }
 
 /**
- * Merge $data into the metadata entry for rule $id and persist the file.
+ * Legacy index adapter. Update workers persist using the captured rule instead.
  */
 function mwddns_set_rule_metadata_in_file(int $id, array $data): void
 {
-    $metadata        = mwddns_get_metadata();
-    $metadata[$id]   = array_merge($metadata[$id] ?? [], $data);
-    mwddns_save_metadata($metadata);
+    $rule = mwddns_get_rule($id);
+    if ($rule !== null) {
+        mwddns_set_metadata_for_rule($rule, $data);
+    }
+}
+
+function mwddns_set_metadata_for_rule(array $rule, array $data): void
+{
+    $key = mwddns_rule_key($rule);
+    mwddns_mutate_metadata(static function (array $metadata) use ($key, $data): array {
+        $metadata[$key] = array_merge($metadata[$key] ?? [], $data);
+        return $metadata;
+    });
 }
 
 /* =========================================================
@@ -385,7 +588,7 @@ function mwddns_set_rule_metadata_in_file(int $id, array $data): void
 function mwddns_get_interface_ip(string $ifname): ?string
 {
     $ip = get_interface_ip($ifname);
-    return ($ip && $ip !== '0.0.0.0') ? $ip : null;
+    return (is_string($ip) && $ip !== '0.0.0.0' && mwddns_is_ip_of_type($ip, 'A')) ? $ip : null;
 }
 
 /**
@@ -395,7 +598,7 @@ function mwddns_get_interface_ip(string $ifname): ?string
 function mwddns_get_interface_ipv6(string $ifname): ?string
 {
     $ip = get_interface_ipv6($ifname);
-    return ($ip && $ip !== '::') ? $ip : null;
+    return (is_string($ip) && $ip !== '::' && mwddns_is_ip_of_type($ip, 'AAAA')) ? $ip : null;
 }
 
 /**
@@ -405,174 +608,236 @@ function mwddns_get_interface_ipv6(string $ifname): ?string
 function mwddns_get_gateway_thresholds(): array
 {
     global $config;
-
-    $thresholds = [];
     $defaults = [
-        'latencyhigh' => (int)($config['gateways']['latencyhigh'] ?? 500),
-        'losshigh'    => (int)($config['gateways']['losshigh'] ?? 20),
+        'latencyhigh' => mwddns_threshold($config['gateways']['latencyhigh'] ?? null, 500),
+        'losshigh' => mwddns_threshold($config['gateways']['losshigh'] ?? null, 20, 100),
     ];
-
-    if (!empty($config['gateways']['gateway_item']) && is_array($config['gateways']['gateway_item'])) {
-        foreach ($config['gateways']['gateway_item'] as $gw) {
-            $name = $gw['name'] ?? '';
-            if ($name === '') {
-                continue;
-            }
-            $thresholds[$name] = [
-                'latencyhigh' => (int)($gw['latencyhigh'] ?? $defaults['latencyhigh']),
-                'losshigh'    => (int)($gw['losshigh'] ?? $defaults['losshigh']),
-            ];
-        }
+    $thresholds = ['' => $defaults];
+    $items = $config['gateways']['gateway_item'] ?? [];
+    if (isset($items['name'])) {
+        $items = [$items];
     }
-
+    foreach (is_array($items) ? $items : [] as $gw) {
+        if (!is_array($gw) || empty($gw['name'])) {
+            continue;
+        }
+        $thresholds[$gw['name']] = [
+            'latencyhigh' => mwddns_threshold($gw['latencyhigh'] ?? null, $defaults['latencyhigh']),
+            'losshigh' => mwddns_threshold($gw['losshigh'] ?? null, $defaults['losshigh'], 100),
+        ];
+    }
     return $thresholds;
 }
 
+function mwddns_threshold($value, float $default, float $maximum = PHP_FLOAT_MAX): float
+{
+    return is_numeric($value) && is_finite((float)$value) &&
+        (float)$value > 0 && (float)$value <= $maximum ? (float)$value : $default;
+}
+
 /**
- * Map gateway name to interface (pfSense logical interface key).
+ * Include runtime-generated DHCP gateways, not only gateway_item entries.
+ * The first three return_gateways_array arguments are shared by old and new
+ * pfSense sources. Do not call the version-dependent get_dpinger_status API.
  */
-function mwddns_gateway_interface_map(): array
+function mwddns_gateway_definitions(): array
 {
     global $config;
-    $map = [];
-
-    if (!empty($config['gateways']['gateway_item']) && is_array($config['gateways']['gateway_item'])) {
-        foreach ($config['gateways']['gateway_item'] as $gw) {
-            $name = $gw['name'] ?? '';
-            $iface = $gw['interface'] ?? '';
-            if ($name !== '' && $iface !== '') {
-                $map[$name] = $iface;
+    $items = $config['gateways']['gateway_item'] ?? [];
+    if (isset($items['name'])) {
+        $items = [$items];
+    }
+    $gateways = [];
+    foreach (is_array($items) ? $items : [] as $gw) {
+        if (is_array($gw) && !empty($gw['name'])) {
+            $gw['friendlyiface'] = $gw['interface'] ?? '';
+            $gateways[$gw['name']] = $gw;
+        }
+    }
+    if (function_exists('return_gateways_array')) {
+        $runtime = return_gateways_array(true, false, true);
+        if (!is_array($runtime)) {
+            throw new RuntimeException('pfSense returned invalid gateway definitions.');
+        }
+        foreach ($runtime as $key => $gw) {
+            if (!is_array($gw)) {
+                continue;
+            }
+            $name = $gw['name'] ?? (is_string($key) ? $key : '');
+            if ($name !== '') {
+                $gateways[$name] = array_replace($gateways[$name] ?? [], $gw);
             }
         }
     }
+    foreach ($gateways as &$gw) {
+        $gw['friendlyiface'] = $gw['friendlyiface'] ??
+            mwddns_normalize_ifname($gw['interface'] ?? '');
+        $gw['ipprotocol'] = $gw['ipprotocol'] ??
+            (strpos((string)($gw['gateway'] ?? ''), ':') !== false ? 'inet6' : 'inet');
+    }
+    unset($gw);
+    return $gateways;
+}
 
+function mwddns_gateway_interface_map(): array
+{
+    $map = [];
+    foreach (mwddns_gateway_definitions() as $name => $gw) {
+        $map[$name] = $gw['friendlyiface'];
+    }
     return $map;
 }
 
-/**
- * Read the contents of a dpinger status file.
- *
- * dpinger writes its output to /var/run/dpinger_*.sock files.  On some
- * FreeBSD/pfSense versions these are Unix-domain socket nodes that cannot be
- * opened with file_get_contents().  Fall back to running `cat` via
- * shell_exec() when the plain read fails.
- */
+/** dpinger -u exposes a Unix stream socket, never a regular status file. */
 function mwddns_read_dpinger_socket(string $socketPath): string
 {
-    $contents = @file_get_contents($socketPath);
-    if ($contents !== false && $contents !== '') {
-        return $contents;
-    }
-    // Validate path before falling back to shell: only /var/run/dpinger_*.sock
-    if (!preg_match('#^/var/run/dpinger_[A-Za-z0-9_.~-]+\.sock$#', $socketPath)) {
+    if (dirname($socketPath) !== '/var/run' ||
+        !preg_match('/^dpinger_[^\/\x00\r\n]+\.sock$/D', basename($socketPath))) {
         return '';
     }
-    // Fall back to shell cat (compatible with Unix-domain socket nodes on BSD).
-    $out = @shell_exec('cat ' . escapeshellarg($socketPath) . ' 2>/dev/null');
-    return is_string($out) ? $out : '';
+    $socket = @stream_socket_client('unix://' . $socketPath, $errno, $error, 1,
+        STREAM_CLIENT_CONNECT);
+    if ($socket === false) {
+        return '';
+    }
+    try {
+        stream_set_timeout($socket, 2);
+        $line = fgets($socket, 4096);
+        $meta = stream_get_meta_data($socket);
+        return is_string($line) && strlen($line) < 4095 && empty($meta['timed_out'])
+            ? trim($line) : '';
+    } finally {
+        fclose($socket);
+    }
 }
 
-/**
- * Read dpinger sockets and determine gateway status (online/down) using the
- * same thresholds/logic as gateway_watcher.py from the reference project.
- *
- * Returns an associative array of gateway names whose monitoring data is
- * available.  Gateways NOT present in the returned array have no dpinger
- * socket; callers should treat the absence as "monitoring disabled".
- */
+/** Return [gateway identifier, online/down/unknown] for one bounded report. */
+function mwddns_parse_dpinger_report(string $report, array $thresholds): ?array
+{
+    $parts = preg_split('/\s+/', trim($report));
+    if (count($parts) !== 4 || !preg_match('/^[A-Za-z0-9_.:-]+$/D', $parts[0])) {
+        return null;
+    }
+    foreach (array_slice($parts, 1) as $value) {
+        if (!is_numeric($value) || !is_finite((float)$value) || (float)$value < 0) {
+            return null;
+        }
+    }
+    $loss = (float)$parts[3];
+    if ($loss > 100) {
+        return null;
+    }
+    $limits = $thresholds[$parts[0]] ?? $thresholds[''] ?? [];
+    $latencyHigh = mwddns_threshold($limits['latencyhigh'] ?? null, 500);
+    $lossHigh = mwddns_threshold($limits['losshigh'] ?? null, 20, 100);
+    $status = ((float)$parts[1] / 1000 < $latencyHigh && $loss < $lossHigh)
+        ? 'online' : 'down';
+    return [$parts[0], $status];
+}
+
+/** Missing, malformed and timed-out reports are unknown, not offline. */
 function mwddns_get_gateway_statuses(array $thresholds): array
 {
     $statuses = [];
     foreach (glob('/var/run/dpinger_*.sock') ?: [] as $socketPath) {
-        $basename = basename($socketPath);
-        if (strpos($basename, 'dpinger_') !== 0) {
-            continue;
+        $fallback = explode('~', substr(basename($socketPath), 8), 2)[0];
+        $fallback = preg_replace('/\.sock$/', '', $fallback);
+        $parsed = mwddns_parse_dpinger_report(mwddns_read_dpinger_socket($socketPath), $thresholds);
+        [$name, $status] = $parsed ?? [$fallback, 'unknown'];
+        // Report identifiers also work when pfSense hashes long socket names.
+        // Conflicting duplicate sockets during a restart must not trigger deletion.
+        if (isset($statuses[$name]) && $statuses[$name] !== $status) {
+            $statuses[$name] = 'unknown';
+        } else {
+            $statuses[$name] = $status;
         }
-        $parts = explode('~', str_replace('dpinger_', '', $basename), 2);
-        $gatewayName = $parts[0] ?? '';
-        if ($gatewayName === '') {
-            continue;
-        }
-
-        $status   = 'down';
-        $contents = mwddns_read_dpinger_socket($socketPath);
-
-        if ($contents !== '') {
-            // dpinger socket format: "<send_interval_us> <rta_us> <stddev_us> <loss_pct>"
-            $fields = preg_split('/\s+/', trim($contents));
-            if (count($fields) >= 4) {
-                $latencyUs     = (int)$fields[1];
-                $lossPct       = (int)$fields[3];
-                $gwThresholds  = $thresholds[$gatewayName] ?? [];
-                $latencyHighMs = (int)($gwThresholds['latencyhigh'] ?? 500);
-                $lossHighPct   = (int)($gwThresholds['losshigh'] ?? 20);
-                if (($latencyUs / 1000) < $latencyHighMs && $lossPct < $lossHighPct) {
-                    $status = 'online';
-                }
-            }
-        }
-
-        $statuses[$gatewayName] = $status;
     }
-
     return $statuses;
 }
 
-/**
- * Collect IPs by record type for a rule, filtering out interfaces whose
- * gateways are not healthy per dpinger thresholds (reference watcher logic).
- */
-function mwddns_collect_ips_for_rule(array $recordTypes, array $rule): array
+/** Select by interface AND family, using an explicit gateway before dynamic ones. */
+function mwddns_select_gateway(string $ifname, string $family, array $gateways): ?array
 {
-    $ipsByType = [];
-    foreach ($recordTypes as $type) {
-        $ipsByType[$type] = [];
-    }
-
-    $thresholds = mwddns_get_gateway_thresholds();
-    $gatewayStatuses = mwddns_get_gateway_statuses($thresholds);
-    $gatewayToIf = mwddns_gateway_interface_map();
-    $ifToGateway = [];
-    foreach ($gatewayToIf as $gwName => $iface) {
-        if (!isset($ifToGateway[$iface])) {
-            $ifToGateway[$iface] = $gwName;
-        }
-    }
-
-    foreach (mwddns_rule_interfaces($rule) as $ifname) {
-        $gwName = $ifToGateway[$ifname] ?? '';
-
-        if ($gwName === '') {
-            // No gateway is configured for this interface.  Skip it to avoid
-            // propagating IPs whose reachability is entirely unknown.
+    global $config;
+    $configured = $config['interfaces'][$ifname][$family === 'inet6' ? 'gatewayv6' : 'gateway'] ?? '';
+    $candidates = [];
+    foreach ($gateways as $name => $gw) {
+        if (($gw['friendlyiface'] ?? '') !== $ifname || ($gw['ipprotocol'] ?? '') !== $family) {
             continue;
         }
-
-        if (isset($gatewayStatuses[$gwName])) {
-            // dpinger monitoring data is available: only include IPs from
-            // gateways that are currently healthy (online).
-            if ($gatewayStatuses[$gwName] !== 'online') {
-                continue; // gateway is down / high-latency / packet-loss
-            }
+        $gw['name'] = $name;
+        if ($configured !== '' && $name === $configured) {
+            return $gw;
         }
-        // If $gatewayStatuses does not contain $gwName, dpinger monitoring is
-        // disabled or the socket has not been created yet.  Treat the interface
-        // as reachable so its IP is still published to DNS.
+        $candidates[$name] = $gw;
+    }
+    if ($configured !== '') {
+        return null;
+    }
+    $dynamic = array_filter($candidates, static fn($gw) => !empty($gw['dynamic']));
+    if (count($dynamic) === 1) {
+        return reset($dynamic);
+    }
+    return count($candidates) === 1 ? reset($candidates) : null;
+}
 
-        if (isset($ipsByType['A'])) {
-            $ip4 = mwddns_get_interface_ip($ifname);
-            if ($ip4 !== null) {
-                $ipsByType['A'][$ip4] = true;
-            }
+/**
+ * Empty type => confirmed empty desired RRset (deletion remains supported).
+ * Omitted type => uncertain monitoring; preserve that whole remote RRset.
+ */
+function mwddns_collect_ips_for_rule(array $recordTypes, array $rule, ?array &$uncertainTypes = null): array
+{
+    global $config;
+    $ipsByType = array_fill_keys($recordTypes, []);
+    $uncertainTypes = [];
+    $interfaces = mwddns_rule_interfaces($rule);
+    if (empty($interfaces)) {
+        foreach ($recordTypes as $type) {
+            $uncertainTypes[$type][] = 'No interfaces configured';
         }
-        if (isset($ipsByType['AAAA'])) {
-            $ip6 = mwddns_get_interface_ipv6($ifname);
-            if ($ip6 !== null) {
-                $ipsByType['AAAA'][$ip6] = true;
+        return [];
+    }
+    $gateways = mwddns_gateway_definitions();
+    $statuses = mwddns_get_gateway_statuses(mwddns_get_gateway_thresholds());
+    foreach ($interfaces as $ifname) {
+        foreach ($recordTypes as $type) {
+            if (!isset($config['interfaces'][$ifname])) {
+                $uncertainTypes[$type][] = $ifname . ': interface is missing';
+                continue;
+            }
+            if (!isset($config['interfaces'][$ifname]['enable'])) {
+                continue; // Explicit administrative disable is not a monitoring error.
+            }
+            $ip = $type === 'A' ? mwddns_get_interface_ip($ifname) : mwddns_get_interface_ipv6($ifname);
+            $gw = mwddns_select_gateway($ifname, $type === 'A' ? 'inet' : 'inet6', $gateways);
+            if ($gw === null) {
+                if ($ip !== null) {
+                    $uncertainTypes[$type][] = $ifname . ': gateway mapping is unknown';
+                }
+                continue; // No address of this family and no gateway: not applicable.
+            }
+            if (isset($gw['disabled']) || isset($gw['force_down'])) {
+                continue;
+            }
+            $unmonitored = isset($gw['monitor_disable']);
+            $state = $unmonitored ? 'online' : ($statuses[$gw['name']] ?? 'unknown');
+            if ($state === 'down') {
+                continue;
+            }
+            if ($state !== 'online') {
+                $uncertainTypes[$type][] = $ifname . ': gateway monitoring is unknown';
+                continue;
+            }
+            if ($ip !== null) {
+                $ipsByType[$type][$ip] = true;
+            } elseif (!$unmonitored) {
+                $uncertainTypes[$type][] = $ifname . ': monitored interface address is unavailable';
             }
         }
     }
-
+    foreach (array_keys($uncertainTypes) as $type) {
+        unset($ipsByType[$type]);
+    }
     return $ipsByType;
 }
 
@@ -693,6 +958,82 @@ function mwddns_dns_lookup_aaaa(string $hostname): array
  * @param string $type 'A' or 'AAAA'
  * @return array       List of IPs (may be empty)
  */
+/**
+ * Read-only GUI path. No DNS resolution or provider requests may happen here.
+ * Null explicitly means missing/stale/failed observation, not an empty RRset.
+ */
+function mwddns_cached_observed_ips(array $rule, string $type): ?array
+{
+    if (!in_array($type, ['A', 'AAAA'], true)) {
+        return null;
+    }
+    $path = MWDDNS_DNS_CACHE_DIR . '/observed_' . mwddns_rule_key($rule) . '_' . $type . '.json';
+    $raw = @file_get_contents($path);
+    $data = is_string($raw) ? json_decode($raw, true) : null;
+    $age = time() - (int)($data['checked_at'] ?? 0);
+    if (!is_array($data) || empty($data['known']) || $age < 0 ||
+        $age > MWDDNS_OBSERVATION_TTL || !is_array($data['ips'] ?? null)) {
+        return null;
+    }
+    return array_values(array_filter($data['ips'],
+        static fn($ip) => is_string($ip) && mwddns_is_ip_of_type($ip, $type)));
+}
+
+/** Called by CLI workers only; publish observations, not assumed desired IPs. */
+function mwddns_refresh_observations(array $rule): void
+{
+    if (PHP_SAPI !== 'cli' || !mwddns_runtime_dir()) {
+        return;
+    }
+    $provider = $rule['provider'] ?? 'cloudflare';
+    if (!mwddns_load_provider($provider)) {
+        return;
+    }
+    $useApiFn = "mwddns_{$provider}_should_use_api_match";
+    $listFn = "mwddns_{$provider}_list_records";
+    foreach (mwddns_rule_record_types($rule) as $type) {
+        if (mwddns_request_timeout_ms() === 0) {
+            break;
+        }
+        $ips = null;
+        try {
+            if (function_exists($useApiFn) && $useApiFn($rule)) {
+                $ips = function_exists($listFn) ? $listFn($rule, $type) : null;
+            } else {
+                $records = @dns_get_record($rule['hostname'] ?? '', $type === 'A' ? DNS_A : DNS_AAAA);
+                if (is_array($records)) {
+                    $ips = [];
+                    foreach ($records as $record) {
+                        $ip = $record[$type === 'A' ? 'ip' : 'ipv6'] ?? '';
+                        if (is_string($ip) && mwddns_is_ip_of_type($ip, $type)) {
+                            $ips[] = $ip;
+                        }
+                    }
+                }
+            }
+            $known = is_array($ips);
+            $ips = $known ? array_values(array_unique(array_filter($ips,
+                static fn($ip) => is_string($ip) && mwddns_is_ip_of_type($ip, $type)))) : [];
+            $json = json_encode(['known' => $known, 'checked_at' => time(), 'ips' => $ips], JSON_THROW_ON_ERROR);
+            $path = MWDDNS_DNS_CACHE_DIR . '/observed_' . mwddns_rule_key($rule) . '_' . $type . '.json';
+            $tmp = tempnam(MWDDNS_DNS_CACHE_DIR, '.observed-');
+            if ($tmp !== false) {
+                try {
+                    if (file_put_contents($tmp, $json) !== false) {
+                        rename($tmp, $path);
+                    }
+                } finally {
+                    if (file_exists($tmp)) {
+                        @unlink($tmp);
+                    }
+                }
+            }
+        } catch (Throwable $e) {
+            mwddns_log('Status observation failed: ' . get_class($e), LOG_WARNING);
+        }
+    }
+}
+
 function mwddns_rule_record_observed_ips(array $rule, string $type): array
 {
     if (!in_array($type, ['A', 'AAAA'], true)) {
@@ -825,7 +1166,9 @@ function mwddns_set_rule_metadata(array &$rules, int $id, array $result, ?int $t
     ];
 
     // Persist to state file (does not touch config.xml)
-    mwddns_set_rule_metadata_in_file($id, $meta);
+    if (isset($rules[$id])) {
+        mwddns_set_metadata_for_rule($rules[$id], $meta);
+    }
 
     // Keep in-memory array in sync for callers that use it immediately
     if (isset($rules[$id])) {
@@ -846,13 +1189,62 @@ function mwddns_set_rule_metadata(array &$rules, int $id, array $result, ?int $t
  *
  * $ipsByType shape passed to providers:
  *   ['A' => ['1.2.3.4' => true, …], 'AAAA' => ['2001:db8::1' => true, …]]
- * All configured record types are included, even when no IP is currently
- * available on monitored interfaces (to allow providers to delete stale
- * records).
+ * Known-empty record types remain present so providers can remove stale records.
+ * Unknown record types are omitted so providers leave their RRsets untouched.
  *
  * Returns: ['ok' => bool, 'message' => string, 'actions' => [...]]
  */
 function mwddns_update_rule(array $rule): array
+{
+    // Release the browser session lock before any external work.
+    if (PHP_SAPI !== 'cli' && session_status() === PHP_SESSION_ACTIVE) {
+        session_write_close();
+    }
+    try {
+        return mwddns_with_operation_lock(static function () use ($rule): array {
+            mwddns_reload_config();
+            $key = mwddns_rule_key($rule);
+            $found = false;
+            foreach (mwddns_get_rules() as $current) {
+                if (mwddns_rule_key($current) === $key) {
+                    $found = true;
+                    break;
+                }
+            }
+            if (!$found) {
+                return ['ok' => false, 'message' => 'Rule changed or was removed. No DNS update was started.', 'actions' => []];
+            }
+            $previousDeadline = $GLOBALS['mwddns_request_deadline'] ?? null;
+            $GLOBALS['mwddns_request_deadline'] = microtime(true) + (PHP_SAPI === 'cli' ? 90 : 20);
+            try {
+                try {
+                    $result = mwddns_update_rule_unlocked($rule);
+                } catch (Throwable $e) {
+                    mwddns_log('Update failed (' . get_class($e) . ').', LOG_ERR);
+                    $result = ['ok' => false, 'message' => 'Update failed; see the MWDDNS system log.', 'actions' => []];
+                }
+                mwddns_set_metadata_for_rule($rule, [
+                    'last_updated' => date('Y-m-d H:i:s'),
+                    'last_status' => !empty($result['ok']) ? 'OK' : 'Error',
+                ]);
+                // CLI refreshes never delay a WebGUI request.
+                mwddns_refresh_observations($rule);
+                return $result;
+            } finally {
+                if ($previousDeadline === null) {
+                    unset($GLOBALS['mwddns_request_deadline']);
+                } else {
+                    $GLOBALS['mwddns_request_deadline'] = $previousDeadline;
+                }
+            }
+        });
+    } catch (Throwable $e) {
+        mwddns_log('MWDDNS operation refused: ' . get_class($e), LOG_WARNING);
+        return ['ok' => false, 'message' => 'Update not started: configuration unavailable or another operation is running. Reload and retry.', 'actions' => []];
+    }
+}
+
+function mwddns_update_rule_unlocked(array $rule): array
 {
     $provider = $rule['provider'] ?? 'cloudflare';  // backward-compat default
     $host     = $rule['hostname'] ?? '';
@@ -877,14 +1269,24 @@ function mwddns_update_rule(array $rule): array
         return ['ok' => false, 'message' => "Rule has no record types configured ({$label}).", 'actions' => []];
     }
 
-    // Gather current IPs by record type (empty sets are still passed so providers can delete stale records).
-    // Use gateway health detection identical to the reference gateway_watcher.py
-    // (https://raw.githubusercontent.com/yatounoneko/pfSense-MWAN-DDNS/aef98c18d230fa11db9143ed3b628a49b3432d12/gateway_watcher.py)
-    // to exclude unhealthy gateways.
-    $ipsByType = mwddns_collect_ips_for_rule($recordTypes, $rule);
+    $uncertain = [];
+    $ipsByType = mwddns_collect_ips_for_rule($recordTypes, $rule, $uncertain);
+    $preserved = [];
+    foreach ($uncertain as $type => $reasons) {
+        $preserved[] = $type . ': ' . implode('; ', array_unique($reasons));
+    }
+    if (empty($ipsByType)) {
+        $message = 'DNS records preserved. ' . implode(' | ', $preserved);
+        mwddns_log($ruleLabel . ': ' . $message, LOG_WARNING);
+        return ['ok' => false, 'message' => $message, 'actions' => []];
+    }
 
     mwddns_log("Updating {$ruleLabel} ({$host}) via {$provider}");
     $result = $fn($ipsByType, $rule);
+    if (!empty($preserved)) {
+        $result['ok'] = false;
+        $result['message'] = ($result['message'] ?? '') . ' Other records preserved: ' . implode(' | ', $preserved);
+    }
     if (!empty($result['actions']) && is_array($result['actions'])) {
         mwddns_log_actions($result['actions'], $ruleLabel, $host);
     }
@@ -919,8 +1321,7 @@ function mwddns_update_all(?string $onlyInterface = null): array
         $res          = mwddns_update_rule($rule);
         $results[$id] = $res;
 
-        // Persist metadata to state file only (not config.xml)
-        mwddns_set_rule_metadata($rules, $id, $res);
+        // Metadata is persisted by update_rule while holding the same operation lock.
     }
 
     return $results;
@@ -979,10 +1380,12 @@ function mwddns_valid_watcher_rcvar(): bool
 function mwddns_set_watcher_rcvar(string $value): void
 {
     if (!mwddns_valid_watcher_rcvar()) {
-        return;
+        throw new RuntimeException('Invalid watcher rcvar name.');
     }
     $rcvarCmd = '/usr/sbin/sysrc -q ' . escapeshellarg(MWDDNS_WATCHER_RCVAR) . '=' . escapeshellarg($value);
-    @mwexec($rcvarCmd);
+    if (mwexec($rcvarCmd) !== 0) {
+        throw new RuntimeException('Failed to set watcher rcvar.');
+    }
 }
 
 /**
@@ -1007,12 +1410,14 @@ function mwddns_remove_cron(): void
 function mwddns_enable_watcher(): void
 {
     if (!file_exists(MWDDNS_WATCHER_RC)) {
-        return;
+        throw new RuntimeException('Gateway watcher rc script is missing.');
     }
-    // Ensure rcvar exists and is enabled; quiet errors if sysrc is absent
+    // Report service failures instead of claiming successful installation.
     $rcdCmd   = MWDDNS_WATCHER_RC . ' restart';
     mwddns_set_watcher_rcvar('YES');
-    @mwexec($rcdCmd);
+    if (mwexec($rcdCmd) !== 0) {
+        throw new RuntimeException('Gateway watcher restart failed.');
+    }
 }
 
 /**
@@ -1023,9 +1428,12 @@ function mwddns_disable_watcher(): void
     if (!file_exists(MWDDNS_WATCHER_RC)) {
         return;
     }
-    $rcdCmd   = MWDDNS_WATCHER_RC . ' stop';
-    @mwexec($rcdCmd);
     mwddns_set_watcher_rcvar('NO');
+    // An already stopped service is not an uninstall failure.
+    if (mwexec(MWDDNS_WATCHER_RC . ' onestatus >/dev/null 2>&1') === 0 &&
+        mwexec(MWDDNS_WATCHER_RC . ' onestop') !== 0) {
+        throw new RuntimeException('Gateway watcher stop failed; files were not removed.');
+    }
 }
 
 /** Called by the pfSense package manager after installation. */

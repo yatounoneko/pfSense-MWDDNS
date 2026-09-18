@@ -36,8 +36,9 @@ Rule configuration：
 | 6 | **Dashboard widget** (titled “Multi-WAN DDNS”) with the same colour-coded status |
 | 7 | **Force Update** button on every rule's edit page for instant sync |
 | 8 | Cron job runs every 5 minutes in the background |
-| 9 | Written in **PHP 8 + shell** – runs on pfSense 2.7/2.8 with zero extra dependencies |
+| 9 | Written in **PHP 8 + Python 3.11 + shell**; requires the pfSense `python311` package for the watcher |
 | 10 | Provider-aware status matching for proxy/CDN modes (see Proxy-mode matching note) |
+| 11 | Background Debug information collection: recent 3 days by default, strict structured privacy, consistent WAN aliases, local preview and JSON download |
 
 ---
 
@@ -54,6 +55,202 @@ Rule configuration：
 ---
 
 ## Repository layout
+
+### Debug information
+
+Open **Services > Multi-WAN DDNS > Debug information**. Choose the number of
+recent days (default **3**, range 1-14), select optional network/WebGUI/runtime
+sources, and click **Save and collect**. This reads existing logs; it does not
+record for three future days, change DNS, restart services, or upload anything.
+
+The background collector uses the explicitly installed Python 3.11 interpreter.
+It includes selected MWDDNS system events, WAN DHCP client events from
+`dhcpd.log`, gateway/PPP/routing events, PHP errors and nginx errors. Numbered
+plain, gzip, bzip2 and xz rotations are supported. Unsupported compression,
+missing files, unparsed timestamps and read limits are reported explicitly.
+Existing log retention may be shorter than the requested three days.
+
+Exports are **structured diagnostics**, not raw messages with a best-effort
+regular-expression scrub. Only fixed event categories, validated dates/numbers,
+known program/function names, and opaque aliases leave the collector. Arbitrary
+text, usernames, domain names, credentials, configuration and alias dictionaries
+are not exported. Unknown error text is intentionally omitted, which can limit
+diagnosis of new errors. There is no raw/unredacted download switch.
+
+`WAN_1`, `WAN_2`, etc. distinguish monitored interfaces throughout one report;
+`IP4_N` / `IP6_N` distinguish addresses without revealing them. The private
+interface-name legend is visible only on the authenticated page, not in the
+download. Do not share screenshots of that legend. Historical IP ownership is
+not guessed when the event lacks an interface/gateway identifier.
+
+Reports are root-private runtime files, not files under the web document root.
+They expire for download after 24 hours; expired files are removed lazily on the
+next collection, and at most three jobs are retained. Preview is limited to
+128 KiB; use **Download sanitized report** for the full collected JSON. Reports
+can also be explicitly deleted. **Recent Debug reports** lists retained jobs
+newest first with browser-local times, status, open and download actions.
+Listing reads metadata only; it does not start a collection or extend expiry.
+No extra cron job or permanent watcher is added.
+
+The collector also retains bounded progress checkpoints. The result page shows
+the last collector stage/source, elapsed and collector CPU seconds, scan indexes
+and counters. Writes are throttled to two seconds with explicit stage/file
+checkpoints. Times describe the last persisted measurement, not GUI waiting time.
+A worker wall-clock or CPU deadline now escapes per-file read-error handling
+and is recorded as a specific failure code.
+
+Completed jobs show collection-wide source/file/byte counts,
+matched/retained/dropped occurrences and exported event groups, calculated after
+final report allocation and size trimming. Per-source progress fields are not
+displayed as misleading zero totals after completion. During global stages with
+no active source, source-specific progress is labelled not applicable. Jobs
+collected by older versions may lack totals; missing totals are never invented.
+The small collector-diagnostics download includes these bounded totals.
+
+If collection fails, use **Download failure diagnostics** in the result or recent
+reports list before retrying. Completed jobs also offer **Download collector
+diagnostics** for final worker measurements. These small JSON exports contain
+only allowlisted stage/source/reason codes, validated timestamps and numeric
+counters; no raw log line, filename, traceback, exception message, credential or
+configuration is included. A numeric collector code line can help locate an
+exception without disclosing its text. Old jobs without checkpoints report
+missing measurements rather than invented durations. The normal report retains
+schema `mwddns-debug-v2` and adds pre-output timing measurements.
+
+A missing final status after 120 seconds is explicitly **unconfirmed**: it does
+not establish a timeout, memory exhaustion or even worker exit. A live worker
+lock prevents deletion or overlapping collection despite a stale GUI status.
+The last source/stage is an investigation lead, not proof that its log caused
+the failure. Existing 75-second wall, 60/65-second soft/hard CPU and 256 MiB memory
+limits are unchanged. This release does not claim every 11- or 14-day collection
+will complete; retained logs and resource limits still apply.
+
+The worker has a 75-second deadline, a 64 MiB total decompressed scan budget,
+8 MiB per file, 24 files per source, 5,000 event groups, and a 6 MiB output cap.
+Scan bytes are divided equally among enabled sources. Smaller estimated on-disk
+sources are processed first so completed sources can release unused capacity.
+Each unvisited source reserves 6 scan seconds and 2,000 candidate groups, subject
+to the total deadlines. Scanning is bounded to 60 wall-clock seconds from collection
+entry and 50 collector CPU seconds, leaving headroom under the unchanged worker
+limits for serialization and output. Compressed disk size is only a work estimate.
+A busy source can borrow up to 5,000 candidate groups. The shared candidate pool
+is max(5,000, 2,000 * enabled sources), never more than 14,000 groups; the existing
+256 MiB worker memory limit still applies. Final allocation guarantees up to 256
+available groups per source, then shares remaining slots fairly within 5,000
+exported groups overall. DHCP traffic cannot consume other sources' reservations.
+Excess groups retain important events first, then newer events within that
+priority, subject to per-class reservations. Errors reserve one third of a
+source's slots, transitions one half, and routine messages the remainder.
+Unused reservations are borrowable, but an error flood cannot take the slots
+reserved for WAN/service context. Source summaries distinguish matched,
+retained, grouped and dropped occurrences, including per-class counts.
+The page explains each source warning, actual versus allocated scan seconds,
+candidate capacity, and occurrences dropped at the candidate, shared allocation
+and report-size stages. Dropped counts cannot measure records that were never
+read. New source summaries also record the oldest/newest observed timestamps
+inside the requested window; neither these bounds nor empty warnings prove
+continuous log coverage.
+
+Schema `mwddns-debug-v2` groups repeated requests, PHP errors and other repetitive
+classes within one-hour buckets. Each group has `occurrences`, `first_seen` and
+`last_seen`; `time` is its first occurrence. Intermediate timestamps are not
+retained. ACK/BOUND, link changes and script-reason transitions remain separate.
+Sum `occurrences`, not array length, when counting retained events.
+
+PHP fatal errors with an identified file and function can merge across changing
+PIDs when their other structured fields match. At most four `pid_samples` are
+kept; `pid_scope` and `pid_samples_limited` disclose multiple processes and
+truncated samples. DHCP process identity is not merged across PIDs.
+
+Per-event-code matched/retained/dropped counts reveal which messages were lost.
+Codes can overlap on the same record, so their totals must not be added as if
+they were disjoint events. A bounded five-minute DHCPREQUEST histogram counts
+scanned, non-sensitive requests before event eviction. It combines WANs/PIDs
+per source; use the individual event aliases for attribution. The source table
+separates empty/stale logs, matching events and collection limits.
+
+Web diagnostics include recognized HTTP status codes (including nginx combined
+access logs), reported OS error numbers, fixed failure/operation/phase/backend
+classifications, numeric nginx worker/connection identifiers, and explicit
+PHP-FPM startup/ready/reload/stop/child-exit messages when present in scanned logs.
+Endpoint paths, request URLs, headers and raw error messages are never exported.
+Sensitive-line filtering still runs first. An errno is reported, not translated
+using another operating system's error table; classifications and equal event
+counts alone do not establish a root cause or pair separate requests.
+
+The page uses theme-compatible padded panels, a responsive two-column form,
+separate action rows and a keyboard-scrollable preview. The private WAN legend
+starts collapsed. Downloads use the report generation time, for example
+`mwddns-debug-2026-09-18_21-46-52.json`, not the time the download was clicked.
+Downloading the same report twice still produces the same filename.
+Coverage timestamps use the browser locale and time zone, including seconds;
+hover text and downloaded JSON retain the original ISO timestamps. Source names,
+timestamps and numeric groups stay intact, with horizontal table scrolling on
+narrow screens. Plugin panels and controls use the main page's square-corner
+geometry without changing other pfSense pages or overriding theme colors.
+
+DHCP details distinguish request destination, server and leased-address aliases,
+explicit script reasons and numeric intervals. A renewal interval is not a lease
+lifetime. Server/destination addresses never establish WAN ownership; inferred
+current leased-address matches are labelled. `EXPIRE` alone does not prove timer
+expiry, and `rc.newwanip` alone does not prove that the public address changed.
+
+These are resource bounds, not a promise that all three days fit. Check
+`partial`, source warnings, dropped counts and coverage timestamps before
+interpreting results. Offline regressions do not certify on-device pfSense
+behavior. Upgrade using the same `sh install.sh` flow without uninstalling;
+existing rules, credentials and debug preferences are retained.
+
+### Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release notes and maintenance history.
+
+### Local WebGUI upgrades (1.0.10 and later)
+
+Install 1.0.10 once using the original `unzip` / `sh install.sh` flow. Thereafter,
+open **Services > Multi-WAN DDNS > Plugin upgrade**, upload a newer versioned
+release ZIP, wait for validation, then choose a mode and click **Upgrade now**.
+The installed updater rejects equal/older versions; there is no bypass switch.
+Only numeric major.minor.patch release versions and release-manifest ZIPs are
+supported, not GitHub source-code ZIPs. The ZIP limit is 8 MiB and the WebGUI/PHP
+upload limit may be lower.
+
+**Preserve data** is the default. **Reset data** requires typing
+`CLEAR MWDDNS` and removes only MWDDNS rules, provider credentials, preferences,
+cache/status and Debug data after backup. Other pfSense settings and existing
+records at DNS providers are not deliberately cleared. Do not uninstall first.
+
+Uploads, extracted files and status live under `/tmp/mwddns-upgrade`. Treat them
+as temporary and lost on reboot. Before either upgrade mode, private backups of
+plugin configuration, existing application files and runtime data are written
+under `/conf/mwddns-backups/upgrade-ID` (directories 0700, files 0600).
+These contain credentials and survive reset/reboot; do not share them. Backups
+are not automatically deleted. Remove old backups only after acceptance and
+your own retention decision. At most three temporary uploads are kept; use
+**Discard temporary upload** to free a slot without deleting its backup.
+
+The page requires UID-0 administrator or effective `page-all` privilege without
+read-only restrictions. A delegated MWDDNS page privilege alone is insufficient.
+pfSense authentication/CSRF and the plugin form token remain enabled.
+
+**Only use trusted releases.** The installed worker validates archive paths,
+file types/counts/sizes, manifest SHA256 and matching version fields before
+executing the ZIP's installer as root. The manifest is integrity metadata,
+**not a digital signature or proof of publisher identity**. Confirm the source
+and compare the displayed archive SHA256 with an independently trusted checksum.
+
+Installation runs in a background process, serializes MWDDNS operations and
+checks the installed files/version/watcher. It does not restart PHP-FPM/nginx.
+Failure triggers a best-effort rollback of backed-up MWDDNS files/configuration;
+unrelated effects of an arbitrary trusted installer cannot be rolled back.
+Power loss/reboot can interrupt installation before rollback and require manual
+recovery using the persistent backup and a known-good release. Do not reboot or
+make concurrent pfSense configuration changes during installation: the official
+configuration writer serializes file replacement, not the entire read-modify-write
+transaction across all system writers. Offline fixtures are not a device upgrade
+or power-loss-recovery certification.
+
+### Source tree
 
 ```
 src/
@@ -83,7 +280,7 @@ install.sh                          # Manual installation helper
 
 ## Requirements
 
-* pfSense CE 2.7.x / 2.8.x / 2.9.x
+* pfSense CE: 2.8.1 is the user-reported operational baseline. The 2.9.0 upgrade exposed a removed configuration API; this tree contains source-level compatibility fixes, **not completed on-device certification**. Older-version fallbacks remain, but 2.7.x and 2.9.x must not be read as universally tested.
 * Python 3.11
 * Credentials/API access for **at least one supported DNS provider**:
   * Cloudflare: API Token + Zone ID
@@ -96,7 +293,7 @@ install.sh                          # Manual installation helper
 ## Installation
 
 ### Install dependencies
-> If already installed plugins that include Python, such as pfBlockerNG, you can skip the dependency installation step.
+> Skip installation only if `/usr/local/bin/python3.11` is already available. A different Python version or a `python3` alias is not equivalent. Use the repository configured by pfSense; do not add a generic FreeBSD package repository.
 ```sh
 # Install Python3.11
 pkg install python311
@@ -266,8 +463,6 @@ Existing rules without these fields default to `cloudflare` and `A` respectively
     <proxied>0</proxied>
     <record_types>A AAAA</record_types>
     <interfaces>wan opt1</interfaces>
-    <last_updated>2024-01-01 00:00:00</last_updated>
-    <last_status>OK</last_status>
   </rule>
   <!-- PowerDNS IPv6-only example -->
   <rule>
@@ -281,8 +476,6 @@ Existing rules without these fields default to `cloudflare` and `A` respectively
     <ttl>300</ttl>
     <record_types>AAAA</record_types>
     <interfaces>wan</interfaces>
-    <last_updated>2024-01-01 00:00:00</last_updated>
-    <last_status>OK</last_status>
   </rule>
 </mwddns>
 ```
@@ -314,10 +507,10 @@ each type (A for IPv4, AAAA for IPv6) independently.
    - `mwddns_{key}_validate(array $post, array &$errors): bool` — validate provider-specific POST fields
    - `mwddns_{key}_update(array $ipsByType, array $rule): array` — perform sync, return `['ok', 'message', 'actions']`
      - `$ipsByType` shape: `['A' => ['1.2.3.4' => true, …], 'AAAA' => ['::1' => true, …]]`
-     - Only types with at least one available address are included as keys.
+     - Known-empty types are included as empty arrays so stale RRsets can be deleted. Types with uncertain monitoring are omitted entirely and MUST remain untouched.
      - The provider must loop over `$ipsByType` and handle each type independently.
 3. Register the provider in `mwddns_get_providers()` inside `mwddns.inc`.
-4. Add the new file to `install.sh` and `mwddns.xml`.
+4. Add the new file to `install.sh`, `mwddns.xml`, and the reviewed-source allowlist in `.gitignore`.
 
 ---
 

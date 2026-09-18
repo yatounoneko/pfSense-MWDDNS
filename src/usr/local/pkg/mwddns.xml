@@ -7,7 +7,7 @@
     <!-- ── Identity ─────────────────────────────────────── -->
     <name>mwddns</name>
     <title>Services: Multi-WAN DDNS</title>
-    <version>1.0.5</version>
+    <version>1.1.1</version>
     <description>Multi-WAN Dynamic DNS for multiple providers (Cloudflare, Alibaba Cloud DNS/ESA, PowerDNS) – monitor multiple WAN interfaces and keep A/AAAA records in sync automatically.</description>
 
     <!-- ── Core include ──────────────────────────────────── -->
@@ -25,6 +25,14 @@
     <!-- ── Page tabs ─────────────────────────────────────── -->
     <tabs>
         <tab>
+            <text>Plugin upgrade</text>
+            <url>/mwddns_upgrade.php</url>
+        </tab>
+        <tab>
+            <text>Debug information</text>
+            <url>/mwddns_debug.php</url>
+        </tab>
+        <tab>
             <text>Rules</text>
             <url>/mwddns.php</url>
             <active/>
@@ -36,6 +44,38 @@
         correct locations on the firewall.
     -->
     <additional_files_needed>
+        <item>
+            <name>/usr/local/pkg/mwddns/upgrade.inc</name>
+            <url>%%PKGPATH%%mwddns/upgrade.inc</url>
+        </item>
+        <item>
+            <name>/usr/local/www/mwddns_upgrade.php</name>
+            <url>%%PKGPATH%%mwddns_upgrade.php</url>
+        </item>
+        <item>
+            <name>/usr/local/bin/mwddns_upgrade.py</name>
+            <url>%%PKGPATH%%mwddns_upgrade.py</url>
+        </item>
+        <item>
+            <name>/usr/local/bin/mwddns_upgrade_config.php</name>
+            <url>%%PKGPATH%%mwddns_upgrade_config.php</url>
+        </item>
+        <item>
+            <name>/usr/local/pkg/mwddns/debug.inc</name>
+            <url>%%PKGPATH%%mwddns/debug.inc</url>
+        </item>
+        <item>
+            <name>/usr/local/www/mwddns_debug.php</name>
+            <url>%%PKGPATH%%mwddns_debug.php</url>
+        </item>
+        <item>
+            <name>/usr/local/bin/mwddns_debug.py</name>
+            <url>%%PKGPATH%%mwddns_debug.py</url>
+        </item>
+        <item>
+            <name>/usr/local/bin/mwddns_debug_snapshot.php</name>
+            <url>%%PKGPATH%%mwddns_debug_snapshot.php</url>
+        </item>
         <item>
             <name>/usr/local/pkg/mwddns/cloudflare.php</name>
             <url>%%PKGPATH%%mwddns/cloudflare.php</url>
