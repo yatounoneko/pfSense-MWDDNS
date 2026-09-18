@@ -163,6 +163,7 @@ function mwddns_alidns_update_impl(array $ipsByType, array $rule, string $provid
             $aliMap[$rec['Value']] = $rec['RecordId'];
         }
 
+        $upsertsOK = true;
         $res = ['ok' => true, 'error' => ''];
         foreach (array_keys($currentIPs) as $ip) {
             if (isset($aliMap[$ip])) {
@@ -175,7 +176,14 @@ function mwddns_alidns_update_impl(array $ipsByType, array $rule, string $provid
             }
             if (!$res['ok']) {
                 $anyError = true;
+                $upsertsOK = false;
             }
+        }
+
+        if (!$upsertsOK) {
+            $actions[] = ['action' => 'preserved', 'ip' => '', 'type' => $type, 'ok' => false,
+                'error' => 'Old records retained because an add/update operation failed.'];
+            continue;
         }
 
         foreach ($aliMap as $oldIP => $recordId) {
@@ -268,10 +276,17 @@ function mwddns_alidns_call(
 
     $url = $endpoint . '/?' . http_build_query($all);
 
+    $timeoutMs = mwddns_request_timeout_ms();
+    if ($timeoutMs <= 0) {
+        return ['ok' => false, 'http' => 0, 'data' => [], 'error' => 'MWDDNS request deadline exceeded.'];
+    }
     $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT        => 30,
+        CURLOPT_TIMEOUT_MS     => $timeoutMs,
+        CURLOPT_CONNECTTIMEOUT_MS => min(5000, $timeoutMs),
+        CURLOPT_FOLLOWLOCATION => false,
+        CURLOPT_SSL_VERIFYHOST => 2,
         CURLOPT_SSL_VERIFYPEER => true,
         CURLOPT_HTTPGET        => true,
     ]);
@@ -279,7 +294,7 @@ function mwddns_alidns_call(
     $raw  = curl_exec($ch);
     $http = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $err  = curl_error($ch);
-    curl_close($ch);
+    unset($ch); // PHP 8 CurlHandle is released when references are dropped.
 
     if ($err) {
         return ['ok' => false, 'http' => 0, 'data' => [], 'error' => $err];

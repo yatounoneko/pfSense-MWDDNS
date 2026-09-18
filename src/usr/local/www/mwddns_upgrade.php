@@ -1,0 +1,192 @@
+<?php
+##|+PRIV
+##|*IDENT=page-services-mwddns-upgrade
+##|*NAME=Services: Multi-WAN DDNS: Plugin upgrade
+##|*DESCR=Upload and install a trusted MWDDNS release; full administrator required.
+##|*MATCH=mwddns_upgrade.php*
+##|-PRIV
+require_once('guiconfig.inc');
+require_once('/usr/local/pkg/mwddns.inc');
+require_once('/usr/local/pkg/mwddns/upgrade.inc');
+if (!mwddns_upgrade_allowed()) {
+    http_response_code(403);
+    exit('Full administrator access is required.');
+}
+header('Cache-Control: no-store');
+header('X-Content-Type-Options: nosniff');
+function mwddns_upgrade_h(string $text): string
+{
+    return htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+}
+function mwddns_upgrade_label(string $text): string { return mwddns_upgrade_h(mwddns_t($text)); }
+$job = is_string($_GET['job'] ?? null) && preg_match('/^[a-f0-9]{32}$/D', $_GET['job']) ? $_GET['job'] : '';
+if (isset($_GET['status'])) {
+    header('Content-Type: application/json; charset=utf-8');
+    try {
+        if (!is_string($_GET['status'])) { throw new RuntimeException('INVALID_STATE'); }
+        echo json_encode(mwddns_upgrade_status($_GET['status']), JSON_THROW_ON_ERROR);
+    } catch (Throwable $error) { http_response_code(400); echo '{"state":"missing"}'; }
+    exit;
+}
+$error = '';
+$errorLabels = [
+    'BUSY' => 'Another operation is running. Wait for it to finish and upload again.',
+    'VERSION_NOT_NEWER' => 'Same-version installation and downgrades are not allowed.',
+    'MANIFEST_REQUIRED' => 'Use a versioned release ZIP with an upgrade manifest, not a source-code ZIP.',
+    'HASH_MISMATCH' => 'Package contents do not match the release manifest.',
+    'ZIP_INVALID' => 'Invalid or unsupported release ZIP.',
+    'VERSION_INVALID' => 'Package version information is invalid or inconsistent.',
+    'ARCHIVE_LIMIT' => 'The archive exceeds safety limits or contains unsupported entries.',
+    'DISK_SPACE' => 'Insufficient space. No upgrade was started.',
+    'JOB_LIMIT' => 'Three uploads are retained. Discard an old upload before adding another.',
+    'UPLOAD_FAILED' => 'Upload failed. Check the ZIP size and the WebGUI upload limit.',
+    'CONFIRMATION_REQUIRED' => 'Confirm the trusted source and the selected upgrade mode.',
+    'EXPIRED' => 'This upload has expired. Upload the ZIP again.',
+    'RECOVERY_REQUIRED' => 'Automatic recovery could not finish. Keep the backup and use manual recovery.',
+    'INSTALL_FAILED' => 'Installation failed; the previous MWDDNS files and data were restored.',
+];
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    try {
+        if (!is_string($_POST['mwddns_csrf_token'] ?? null) || !mwddns_csrf_validate($_POST['mwddns_csrf_token'])) {
+            throw new RuntimeException('CONFIRMATION_REQUIRED');
+        }
+        $action = $_POST['action'] ?? '';
+        if (!is_string($action) || !in_array($action, ['upload', 'install', 'discard'], true)) {
+            throw new RuntimeException('INVALID_STATE');
+        }
+        $job = mwddns_upgrade_action($action, $_POST, $_FILES);
+        header('Location: /mwddns_upgrade.php' . ($job !== '' ? '?job=' . $job : ''), true, 303);
+        exit;
+    } catch (Throwable $exception) {
+        $error = $errorLabels[$exception->getMessage()] ?? 'Upgrade operation failed. Check the current stage and retained backup.';
+    }
+}
+$status = $job !== '' ? mwddns_upgrade_status($job) : ['state' => 'none'];
+$labels = [
+    'none' => 'Upload a release to begin.', 'checking' => 'Checking the uploaded ZIP...',
+    'ready' => 'Package checked. Choose the upgrade mode and confirm.',
+    'queued' => 'Queued', 'running' => 'Upgrade in progress. Do not reboot.',
+    'complete' => 'Upgrade complete.', 'failed' => 'Upgrade failed.',
+    'rolled_back' => 'Upgrade failed; previous MWDDNS files and data restored.',
+    'recovery_required' => 'Manual recovery required.', 'missing' => 'Upload unavailable.',
+    'expired' => 'Upload expired.', 'interrupted' => 'Upgrade interrupted or status is stale. Check before retrying.',
+];
+$pgtitle = [mwddns_t('Services'), mwddns_t('Multi-WAN DDNS'), mwddns_t('Plugin upgrade')];
+$pglinks = ['', '/mwddns.php', '/mwddns_upgrade.php'];
+include('head.inc');
+?>
+<body>
+<?php include('fbegin.inc'); ?>
+<style>
+#mwddns-upgrade { max-width:1180px; margin:0 auto; padding:10px 20px 36px; }
+#mwddns-upgrade .panel { margin-bottom:22px; border-radius:6px; }
+#mwddns-upgrade .panel-heading { padding:14px 22px; }
+#mwddns-upgrade .panel-body { padding:22px; }
+#mwddns-upgrade p, #mwddns-upgrade label { line-height:1.65; }
+#mwddns-upgrade .alert { margin:0 0 18px; padding:16px 18px; }
+#mwddns-upgrade .upgrade-actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:20px; }
+#mwddns-upgrade .upgrade-choice { display:block; padding:10px 0; font-weight:normal; }
+#mwddns-upgrade input[type="radio"], #mwddns-upgrade input[type="checkbox"] { position:static; margin-right:8px; }
+#mwddns-upgrade .upgrade-confirm { max-width:28em; margin:10px 0 18px; }
+#mwddns-upgrade code { overflow-wrap:anywhere; }
+@media(max-width:767px) { #mwddns-upgrade { padding:4px 10px 24px; } #mwddns-upgrade .panel-body { padding:16px; } }
+</style>
+<section class="page-content-main"><div id="mwddns-upgrade" class="container-fluid">
+<?php if ($error !== ''): ?><div class="alert alert-danger"><?= mwddns_upgrade_label($error) ?></div><?php endif; ?>
+<div class="panel panel-default">
+<div class="panel-heading"><h2 class="panel-title"><?= mwddns_upgrade_label('Plugin upgrade') ?></h2></div>
+<div class="panel-body">
+    <p><?= mwddns_upgrade_label('Installed version') ?>: <strong><?= mwddns_upgrade_h(mwddns_upgrade_version()) ?></strong></p>
+    <div class="alert alert-warning"><?= mwddns_upgrade_label('Only upload releases from a source you trust. The installer runs as root. SHA256 checks detect changed files; they do not authenticate the publisher.') ?></div>
+    <p><?= mwddns_upgrade_label('Uploads and working files use /tmp and may disappear on reboot. They are not permanent backups.') ?></p>
+    <p><?= mwddns_upgrade_label('Before installation, MWDDNS data and files are backed up under /conf/mwddns-backups. Backups contain credentials, remain after reset, and must not be shared.') ?></p>
+    <p><?= mwddns_upgrade_label('Do not reboot or change other pfSense configuration during installation. Only MWDDNS is paused; power loss may require manual recovery.') ?></p>
+    <form method="post" enctype="multipart/form-data" action="/mwddns_upgrade.php">
+        <?= mwddns_csrf_input() ?>
+        <input type="hidden" name="MAX_FILE_SIZE" value="<?= MWDDNS_UPGRADE_MAX_ZIP ?>">
+        <label for="upgrade-package"><?= mwddns_upgrade_label('Release ZIP (maximum 8 MiB)') ?></label>
+        <input id="upgrade-package" name="package" type="file" accept=".zip,application/zip" required>
+        <p class="help-block"><?= mwddns_upgrade_label('Use the versioned release ZIP. Same versions, older versions and source-code ZIPs are rejected. The WebGUI may impose a lower upload limit.') ?></p>
+        <div class="upgrade-actions">
+            <button class="btn btn-primary" name="action" value="upload"><?= mwddns_upgrade_label('Upload and check') ?></button>
+            <a class="btn btn-default" href="/mwddns.php"><?= mwddns_upgrade_label('Back to rules') ?></a>
+        </div>
+    </form>
+</div></div>
+<div class="panel panel-default">
+<div class="panel-heading"><h2 class="panel-title"><?= mwddns_upgrade_label('Upgrade status') ?></h2></div>
+<div class="panel-body">
+    <p role="status"><strong><?= mwddns_upgrade_label($labels[$status['state']] ?? 'Upload unavailable.') ?></strong></p>
+<?php if (isset($status['stage'])): ?>
+    <p><?= mwddns_upgrade_label('Stage') ?>: <code><?= mwddns_upgrade_h($status['stage']) ?></code></p>
+<?php endif; ?>
+<?php if (isset($status['error'])): ?>
+    <div class="alert alert-warning"><?= mwddns_upgrade_label($errorLabels[$status['error']] ?? 'Upgrade operation failed. Check the current stage and retained backup.') ?>
+    <code><?= mwddns_upgrade_h($status['error']) ?></code></div>
+<?php endif; ?>
+<?php if (isset($status['version'])): ?>
+    <p><?= mwddns_upgrade_label('Uploaded version') ?>: <strong><?= mwddns_upgrade_h($status['version']) ?></strong></p>
+<?php endif; ?>
+<?php if (isset($status['sha256'])): ?>
+    <p>SHA256: <code><?= mwddns_upgrade_h($status['sha256']) ?></code></p>
+<?php endif; ?>
+<?php if (isset($status['backup'])): ?>
+    <p><?= mwddns_upgrade_label('Private backup') ?>: <code>/conf/mwddns-backups/<?= mwddns_upgrade_h($status['backup']) ?></code></p>
+<?php endif; ?>
+<?php if ($status['state'] === 'ready'): ?>
+    <form method="post" action="/mwddns_upgrade.php">
+        <?= mwddns_csrf_input() ?><input type="hidden" name="job" value="<?= $job ?>">
+        <label class="upgrade-choice"><input type="radio" name="mode" value="preserve" checked>
+            <?= mwddns_upgrade_label('Keep all MWDDNS data (default)') ?></label>
+        <label class="upgrade-choice"><input type="radio" name="mode" value="reset">
+            <?= mwddns_upgrade_label('Back up, then clear all MWDDNS rules, credentials, preferences and runtime data') ?></label>
+        <label for="upgrade-confirm"><?= mwddns_upgrade_label('For reset mode, type CLEAR MWDDNS. Other pfSense settings are not cleared.') ?></label>
+        <input class="form-control upgrade-confirm" id="upgrade-confirm" name="confirmation" autocomplete="off" spellcheck="false">
+        <label class="upgrade-choice"><input type="checkbox" name="trusted" value="yes" required>
+            <?= mwddns_upgrade_label('I trust this package and authorize its installer to run as root.') ?></label>
+        <div class="upgrade-actions"><button class="btn btn-danger" name="action" value="install"><?= mwddns_upgrade_label('Upgrade now') ?></button></div>
+    </form>
+<?php endif; ?>
+<?php if ($job !== ''): ?>
+    <div class="upgrade-actions">
+        <a class="btn btn-default" href="/mwddns_upgrade.php?job=<?= $job ?>"><?= mwddns_upgrade_label('Refresh status') ?></a>
+<?php if (!in_array($status['state'], ['checking', 'queued', 'running', 'missing'], true)): ?>
+        <form method="post" action="/mwddns_upgrade.php">
+            <?= mwddns_csrf_input() ?><input type="hidden" name="job" value="<?= $job ?>">
+            <button class="btn btn-default" name="action" value="discard"><?= mwddns_upgrade_label('Discard temporary upload (keep backup)') ?></button>
+        </form>
+<?php endif; ?>
+    </div>
+<?php endif; ?>
+</div></div>
+<div class="panel panel-default">
+<div class="panel-heading"><h2 class="panel-title"><?= mwddns_upgrade_label('Recent uploads') ?></h2></div>
+<div class="panel-body"><ul>
+<?php foreach (mwddns_upgrade_jobs() as $id => $row): ?>
+    <li><a href="/mwddns_upgrade.php?job=<?= $id ?>"><?= mwddns_upgrade_h(
+        date('Y-m-d H:i:s', $row['started'] ?? 0) . ' / ' . ($row['version'] ?? '?')) ?></a>
+        <?= mwddns_upgrade_label($labels[$row['state']] ?? 'Upload unavailable.') ?></li>
+<?php endforeach; ?>
+</ul></div></div>
+</div></section>
+<?php if (in_array($status['state'], ['checking', 'queued', 'running'], true)): ?>
+<script>
+(function () {
+    var count = 0;
+    var job = <?= json_encode($job, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+    function poll() {
+        if (++count > 180) { return; }
+        fetch('/mwddns_upgrade.php?status=' + job, {credentials:'same-origin', cache:'no-store'})
+            .then(function (r) { if (!r.ok) { throw new Error('status'); } return r.json(); })
+            .then(function (r) {
+                if (r.state === 'checking' || r.state === 'queued' || r.state === 'running') {
+                    window.setTimeout(poll, 3000);
+                } else { window.location.replace('/mwddns_upgrade.php?job=' + job); }
+            })
+            .catch(function () { window.setTimeout(poll, 5000); });
+    }
+    window.setTimeout(poll, 2000);
+}());
+</script>
+<?php endif; ?>
+<?php include('foot.inc'); ?>

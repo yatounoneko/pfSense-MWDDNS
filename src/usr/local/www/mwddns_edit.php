@@ -15,6 +15,19 @@
 require_once('guiconfig.inc');
 require_once('/usr/local/pkg/mwddns.inc');
 
+// Reject malformed arrays before trim(), array keys and HTML rendering.
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    foreach ($_POST as $key => $value) {
+        $valid = in_array($key, ['interfaces', 'record_types'], true)
+            ? is_array($value) && count(array_filter($value, 'is_string')) === count($value)
+            : is_string($value);
+        if (!$valid) {
+            http_response_code(400);
+            exit('Invalid form data.');
+        }
+    }
+}
+
 // Load all providers and their files so field/validate functions are available
 $allProviders = mwddns_get_providers();
 foreach ($allProviders as $pKey => $pInfo) {
@@ -44,6 +57,7 @@ $ifaceList = get_configured_interface_list();
 
 // ── Input errors ──────────────────────────────────────────────────────────────
 $errors = [];
+$formRevision = $_POST['mwddns_revision'] ?? mwddns_rules_revision(mwddns_get_rules());
 
 // ── Force-update action ───────────────────────────────────────────────────────
 $forceResult = null;
@@ -53,12 +67,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'force_up
     if (!mwddns_csrf_validate($token)) {
         $errors[] = mwddns_t('Invalid request token. Please reload the page and try again.');
     }
+    if (!hash_equals(mwddns_rules_revision(mwddns_get_rules()), $formRevision)) {
+        $errors[] = mwddns_t('Configuration changed. Reload the page before saving.');
+    }
     if (empty($errors) && $editMode && $rule !== null) {
         $forceResult = mwddns_update_rule($rule);
-        mwddns_set_rule_metadata_in_file($id, [
-            'last_updated' => date('Y-m-d H:i:s'),
-            'last_status'  => $forceResult['ok'] ? 'OK' : 'Error',
-        ]);
         $rule = mwddns_get_rule($id);
     }
 }
@@ -84,11 +97,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'save') {
         $errors[] = mwddns_t('Hostname must be a valid fully-qualified domain name.');
     }
     $ttlInt = (int)$ttl;
-    if ($ttlInt !== 1 && ($ttlInt < 60 || $ttlInt > 86400)) {
+    if (!ctype_digit($ttl) || ($ttlInt !== 1 && ($ttlInt < 60 || $ttlInt > 86400))) {
         $errors[] = mwddns_t('TTL must be 1 (auto) or between 60 and 86400 seconds.');
     }
     if (empty($interfaces)) {
         $errors[] = mwddns_t('At least one interface must be selected.');
+    }
+    foreach ($interfaces as $ifname) {
+        if (!isset($config['interfaces'][$ifname])) {
+            $errors[] = mwddns_t('Invalid interface selected.');
+            break;
+        }
     }
     if (empty($recordTypes)) {
         $errors[] = mwddns_t('At least one record type (A or AAAA) must be selected.');
@@ -101,6 +120,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'save') {
         $errors[] = mwddns_t('Invalid DNS provider selected.');
     }
 
+    if ($provider === 'powerdns') {
+        $_POST = mwddns_pdns_normalize_transport($_POST);
+    }
+
     // Provider-specific validation
     $validateFn = "mwddns_{$provider}_validate";
     if (function_exists($validateFn)) {
@@ -111,14 +134,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'save') {
         $allRules = mwddns_get_rules();
 
         // Collect all provider-specific field values from every provider
-        $entry = [
+        $entry = array_replace($rule ?? [], [
             'provider'     => $provider,
             'name'         => $name,
             'hostname'     => $hostname,
             'ttl'          => $ttl,
             'interfaces'   => implode(' ', $interfaces),
             'record_types' => implode(' ', $validTypes),
-        ];
+        ]);
         foreach ($allProviders as $pKey => $pInfo) {
             $fieldsFn = "mwddns_{$pKey}_fields";
             if (!function_exists($fieldsFn)) {
@@ -143,30 +166,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'save') {
             $targetId = array_key_last($allRules);
         }
 
-        mwddns_save_rules($allRules);
-
-        $redirectMsg = 'saved';
-            $rulesWithMeta = mwddns_get_rules();
-            $savedRule = $rulesWithMeta[$targetId] ?? null;
+        try {
+            mwddns_save_rules($allRules, $formRevision);
+            $savedRule = mwddns_get_rule($targetId);
+            $redirectMsg = 'saved';
             if ($savedRule !== null) {
-                // Ensure that exceptions during update do not break the redirect flow.
-                $updateResult = ['ok' => false];
-                try {
-                    $updateResult = mwddns_update_rule($savedRule);
-                } catch (Exception $e) {
-                    error_log('MWDDNS: exception during rule update: ' . $e->getMessage());
-                    $updateResult['error'] = 'Unhandled exception during rule update: ' . $e->getMessage();
-                }
-                mwddns_set_rule_metadata($rulesWithMeta, $targetId, $updateResult);
-                $msg = $updateResult['message'] ?? '';
-                mwddns_log("Manual update for {$savedRule['name']} ({$savedRule['hostname']}) " .
-                    (!empty($updateResult['ok']) ? 'OK' : 'FAIL') . ($msg !== '' ? ": {$msg}" : ''),
-                    !empty($updateResult['ok']) ? LOG_INFO : LOG_ERR);
-                $redirectMsg = $updateResult['ok'] ? 'updated' : 'update_error';
+                $updateResult = mwddns_update_rule($savedRule);
+                $redirectMsg = !empty($updateResult['ok']) ? 'updated' : 'update_error';
             }
-
-        header('Location: /mwddns.php?msg=' . $redirectMsg);
-        exit;
+            header('Location: /mwddns.php?msg=' . $redirectMsg);
+            exit;
+        } catch (Throwable $e) {
+            // Keep submitted inputs and never run the updater after a failed save.
+            $errors[] = mwddns_t($e instanceof RuntimeException
+                ? $e->getMessage()
+                : 'Configuration could not be saved. No DNS update was started.');
+        }
     }
     // Fall through to re-render the form with errors.
 }
@@ -223,6 +238,7 @@ include('head.inc');
 <form method="post" action="/mwddns_edit.php<?= $editMode ? '?id=' . (int)$id : '' ?>"
       class="form-horizontal">
     <?= mwddns_csrf_input() ?>
+    <input type="hidden" name="mwddns_revision" value="<?= htmlspecialchars($formRevision) ?>">
     <input type="hidden" name="act" value="save">
 
     <!-- ── Panel 1: Common settings ─────────────────────────────────────── -->
@@ -372,6 +388,9 @@ include('head.inc');
                 <?php foreach ($pFields as $field):
                     $fKey  = $field['key'];
                     $fVal  = $rule[$fKey] ?? '';
+                    if ($fKey === 'pdns_scheme' && $fVal === '') {
+                        $fVal = strtolower((string)parse_url($rule['pdns_url'] ?? '', PHP_URL_SCHEME)) ?: 'https';
+                    }
                     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         if ($field['type'] === 'checkbox') {
                             $fVal = $_POST[$fKey] ?? '';
@@ -382,7 +401,7 @@ include('head.inc');
                 ?>
 
                 <div class="form-group">
-                    <label class="col-sm-2 control-label" for="f_<?= htmlspecialchars($fKey) ?>">
+                    <label class="col-sm-2 control-label" for="f_<?= htmlspecialchars($pKey . '_' . $fKey) ?>">
                         <?= htmlspecialchars($field['label']) ?>
                         <?php if (!empty($field['required'])): ?>
                         <span class="text-danger">*</span>
@@ -394,7 +413,7 @@ include('head.inc');
                         <div class="checkbox">
                             <label>
                                 <input type="checkbox"
-                                       id="f_<?= htmlspecialchars($fKey) ?>"
+                                       id="f_<?= htmlspecialchars($pKey . '_' . $fKey) ?>"
                                        name="<?= htmlspecialchars($fKey) ?>"
                                        value="<?= htmlspecialchars($field['cvalue'] ?? '1') ?>"
                                        <?= ($fVal === ($field['cvalue'] ?? '1')) ? 'checked' : '' ?>>
@@ -402,10 +421,22 @@ include('head.inc');
                             </label>
                         </div>
 
+                        <?php elseif ($field['type'] === 'select'): ?>
+                        <select class="form-control"
+                                id="f_<?= htmlspecialchars($pKey . '_' . $fKey) ?>"
+                                name="<?= htmlspecialchars($fKey) ?>"
+                                <?= !empty($field['required']) ? 'data-required-field="1"' : '' ?>
+                                <?= (!empty($field['required']) && $isActive) ? ' required' : '' ?>>
+                        <?php foreach ($field['options'] as $value => $label): ?>
+                            <option value="<?= htmlspecialchars($value) ?>" <?= $fVal === $value ? 'selected' : '' ?>>
+                                <?= htmlspecialchars($label) ?>
+                            </option>
+                        <?php endforeach; ?>
+                        </select>
                         <?php else: ?>
                         <input type="<?= htmlspecialchars($field['type']) ?>"
                                class="form-control"
-                               id="f_<?= htmlspecialchars($fKey) ?>"
+                               id="f_<?= htmlspecialchars($pKey . '_' . $fKey) ?>"
                                name="<?= htmlspecialchars($fKey) ?>"
                                value="<?= htmlspecialchars($fVal) ?>"
                                <?php if (!empty($field['placeholder'])): ?>
@@ -464,7 +495,23 @@ include('head.inc');
 (function () {
     var sel = document.getElementById('provider');
 
+    // AliDNS CN/Intl share field names. Synchronize duplicate controls so a
+    // hidden provider panel cannot overwrite the active panel's credentials.
+    function syncSharedFields(section) {
+        if (!section) { return; }
+        section.querySelectorAll('input[name]').forEach(function (source) {
+            document.querySelectorAll('[data-provider-section] input[name]').forEach(function (target) {
+                if (target !== source && target.name === source.name) {
+                    target.value = source.value;
+                    target.checked = source.checked;
+                }
+            });
+        });
+    }
+    var activeKey = sel.value;
     function switchProvider(key) {
+        syncSharedFields(document.querySelector('[data-provider-section="' + activeKey + '"]'));
+        activeKey = key;
         document.querySelectorAll('[data-provider-section]').forEach(function (el) {
             var active = el.getAttribute('data-provider-section') === key;
             el.style.display = active ? '' : 'none';
@@ -481,8 +528,24 @@ include('head.inc');
         inp.setAttribute('data-required-field', '1');
     });
 
+    sel.form.addEventListener('submit', function () {
+        syncSharedFields(document.querySelector('[data-provider-section="' + sel.value + '"]'));
+    });
     sel.addEventListener('change', function () { switchProvider(this.value); });
     switchProvider(sel.value);
+
+    // The explicit scheme selector is authoritative; keep host, port and path.
+    var scheme = document.getElementById('f_powerdns_pdns_scheme');
+    var url = document.getElementById('f_powerdns_pdns_url');
+    function syncTransport() {
+        if (!scheme || !url || !url.value.trim()) { return; }
+        url.value = scheme.value + '://' + url.value.trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
+    }
+    if (scheme && url) {
+        scheme.addEventListener('change', syncTransport);
+        url.addEventListener('change', syncTransport);
+        sel.form.addEventListener('submit', syncTransport);
+    }
 }());
 </script>
 

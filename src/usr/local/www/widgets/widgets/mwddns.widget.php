@@ -39,8 +39,8 @@ $rules = mwddns_get_rules();
 <?php foreach ($rules as $rule):
     $ipsInfo = mwddns_get_rule_ips($rule);
     $types   = mwddns_rule_record_types($rule);
-    $dnsIPv4 = in_array('A',    $types, true) ? mwddns_rule_record_observed_ips($rule, 'A')    : [];
-    $dnsIPv6 = in_array('AAAA', $types, true) ? mwddns_rule_record_observed_ips($rule, 'AAAA') : [];
+    $dnsIPv4 = in_array('A',    $types, true) ? mwddns_cached_observed_ips($rule, 'A')    : [];
+    $dnsIPv6 = in_array('AAAA', $types, true) ? mwddns_cached_observed_ips($rule, 'AAAA') : [];
 ?>
         <tr>
             <td>
@@ -54,22 +54,22 @@ $rules = mwddns_get_rules();
                 <div>
                     <small class="text-muted"><?= htmlspecialchars($info['desc']) ?>:</small>
 <?php if (in_array('A', $types, true)): ?>
-<?php   if ($info['ipv4'] !== null): $inSync = in_array($info['ipv4'], $dnsIPv4, true); ?>
-                    <span class="<?= $inSync ? 'text-success' : 'text-danger' ?>"
-                          title="A – <?= $inSync ? mwddns_t('In sync') : mwddns_t('Out of sync') ?>">
+<?php   if ($info['ipv4'] !== null): $known = $dnsIPv4 !== null; $inSync = $known && in_array($info['ipv4'], $dnsIPv4, true); ?>
+                    <span class="<?= !$known ? 'text-muted' : ($inSync ? 'text-success' : 'text-danger') ?>"
+                          title="A – <?= !$known ? mwddns_t('Status pending or stale.') : ($inSync ? mwddns_t('In sync') : mwddns_t('Out of sync')) ?>">
                         <?= htmlspecialchars($info['ipv4']) ?>
-                        <i class="fa fa-<?= $inSync ? 'check-circle' : 'exclamation-circle' ?>"></i>
+                        <i class="fa fa-<?= !$known ? 'question-circle' : ($inSync ? 'check-circle' : 'exclamation-circle') ?>"></i>
                     </span>
 <?php   else: ?>
                     <span class="text-muted"><?= mwddns_t('No IPv4') ?></span>
 <?php   endif; ?>
 <?php endif; ?>
 <?php if (in_array('AAAA', $types, true)): ?>
-<?php   if ($info['ipv6'] !== null): $inSync = in_array($info['ipv6'], $dnsIPv6, true); ?>
-                    <span class="<?= $inSync ? 'text-success' : 'text-danger' ?>"
-                          title="AAAA – <?= $inSync ? mwddns_t('In sync') : mwddns_t('Out of sync') ?>">
+<?php   if ($info['ipv6'] !== null): $known = $dnsIPv6 !== null; $inSync = $known && in_array($info['ipv6'], $dnsIPv6, true); ?>
+                    <span class="<?= !$known ? 'text-muted' : ($inSync ? 'text-success' : 'text-danger') ?>"
+                          title="AAAA – <?= !$known ? mwddns_t('Status pending or stale.') : ($inSync ? mwddns_t('In sync') : mwddns_t('Out of sync')) ?>">
                         <?= htmlspecialchars($info['ipv6']) ?>
-                        <i class="fa fa-<?= $inSync ? 'check-circle' : 'exclamation-circle' ?>"></i>
+                        <i class="fa fa-<?= !$known ? 'question-circle' : ($inSync ? 'check-circle' : 'exclamation-circle') ?>"></i>
                     </span>
 <?php   else: ?>
                     <span class="text-muted"><?= mwddns_t('No IPv6') ?></span>

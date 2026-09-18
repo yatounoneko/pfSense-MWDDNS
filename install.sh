@@ -24,11 +24,17 @@ PKG_INC="/usr/local/pkg/mwddns.inc"
 PKG_XML="/usr/local/pkg/mwddns.xml"
 WWW_MAIN="/usr/local/www/mwddns.php"
 WWW_EDIT="/usr/local/www/mwddns_edit.php"
+WWW_DEBUG="/usr/local/www/mwddns_debug.php"
+DEBUG_PY="/usr/local/bin/mwddns_debug.py"
+DEBUG_SNAPSHOT="/usr/local/bin/mwddns_debug_snapshot.php"
+WWW_UPGRADE="/usr/local/www/mwddns_upgrade.php"
+UPGRADE_PY="/usr/local/bin/mwddns_upgrade.py"
+UPGRADE_CONFIG="/usr/local/bin/mwddns_upgrade_config.php"
 WWW_WIDGET="/usr/local/www/widgets/widgets/mwddns.widget.php"
 CRON_SCRIPT="/usr/local/bin/mwddns_cron.php"
 WATCHER_PY="/usr/local/bin/mwddns_gateway_watcher.py"
 WATCHER_RC="/usr/local/etc/rc.d/mwddns_watcher"
-PKG_VERSION="1.0.5"
+PKG_VERSION="1.0.10"
 MWDDNS_METADATA_DIR="/var/run/mwddns"
 
 # ---------------------------------------------------------------------------
@@ -71,7 +77,17 @@ EOF
 # ---------------------------------------------------------------------------
 install_files() {
     echo "==> Installing Multi-WAN DDNS plugin..."
+    if [ "$(id -u)" -ne 0 ]; then
+        echo "ERROR: Installation requires root." >&2
+        exit 1
+    fi
+    if [ ! -x /usr/local/bin/php ] || [ ! -x /usr/local/bin/python3.11 ]; then
+        echo "ERROR: pfSense PHP and /usr/local/bin/python3.11 are required." >&2
+        echo "Use the matching pfSense package repository for python311; do not assume python3 exists." >&2
+        exit 1
+    fi
 
+    echo "[1/4] Copying plugin files..."
     install -m 0644 "${SRC}/usr/local/pkg/mwddns.inc" "${PKG_INC}"
     install -m 0644 "${SRC}/usr/local/pkg/mwddns.xml" "${PKG_XML}"
 
@@ -81,6 +97,8 @@ install_files() {
     install -m 0644 "${SRC}/usr/local/pkg/mwddns/alidns.php"     /usr/local/pkg/mwddns/alidns.php
     install -m 0644 "${SRC}/usr/local/pkg/mwddns/aliesa.php"      /usr/local/pkg/mwddns/aliesa.php
     install -m 0644 "${SRC}/usr/local/pkg/mwddns/powerdns.php"    /usr/local/pkg/mwddns/powerdns.php
+    install -m 0644 "${SRC}/usr/local/pkg/mwddns/debug.inc"      /usr/local/pkg/mwddns/debug.inc
+    install -m 0644 "${SRC}/usr/local/pkg/mwddns/upgrade.inc"    /usr/local/pkg/mwddns/upgrade.inc
 
     # GUI locale files (Simplified Chinese / Traditional Chinese)
     mkdir -p /usr/local/pkg/mwddns/locale
@@ -89,6 +107,12 @@ install_files() {
 
     install -m 0644 "${SRC}/usr/local/www/mwddns.php" "${WWW_MAIN}"
     install -m 0644 "${SRC}/usr/local/www/mwddns_edit.php" "${WWW_EDIT}"
+    install -m 0644 "${SRC}/usr/local/www/mwddns_debug.php" "${WWW_DEBUG}"
+    install -m 0755 "${SRC}/usr/local/bin/mwddns_debug.py" "${DEBUG_PY}"
+    install -m 0755 "${SRC}/usr/local/bin/mwddns_debug_snapshot.php" "${DEBUG_SNAPSHOT}"
+    install -m 0644 "${SRC}/usr/local/www/mwddns_upgrade.php" "${WWW_UPGRADE}"
+    install -m 0755 "${SRC}/usr/local/bin/mwddns_upgrade.py" "${UPGRADE_PY}"
+    install -m 0755 "${SRC}/usr/local/bin/mwddns_upgrade_config.php" "${UPGRADE_CONFIG}"
     install -m 0755 "${SRC}/usr/local/bin/mwddns_cron.php" "${CRON_SCRIPT}"
     install -m 0755 "${SRC}/usr/local/bin/mwddns_gateway_watcher.py" "${WATCHER_PY}"
 
@@ -104,28 +128,53 @@ install_files() {
 
     # Ensure runtime metadata/cache directory exists
     mkdir -p "${MWDDNS_METADATA_DIR}"
-    chmod 700 "${MWDDNS_METADATA_DIR}" 2>/dev/null || true
+    chmod 700 "${MWDDNS_METADATA_DIR}"
 
     # Register cron job via pfSense PHP bootstrap
+    echo "[2/4] Loading configuration and registering cron..."
     /usr/local/bin/php -r "
         require_once('/etc/inc/globals.inc');
         require_once('/etc/inc/functions.inc');
         require_once('/etc/inc/config.inc');
         require_once('/usr/local/pkg/mwddns.inc');
-        \$config = parse_config(true);
+        if (function_exists('config_read_file')) {
+            if (!config_read_file(false, false)) {
+                throw new RuntimeException('MWDDNS: configuration reload failed.');
+            }
+        } elseif (function_exists('parse_config')) {
+            \$config = parse_config(true);
+        } else {
+            throw new RuntimeException('MWDDNS: no supported configuration API.');
+        }
+        if (!is_array(\$config) || empty(\$config)) {
+            throw new RuntimeException('MWDDNS: empty configuration; refusing to continue.');
+        }
         mwddns_install_cron();
-        mwddns_enable_watcher();
         echo 'Cron job registered.' . PHP_EOL;
-        echo 'Gateway watcher enabled.' . PHP_EOL;
+        echo '[3/4] Enabling and restarting gateway watcher...' . PHP_EOL;
+        mwddns_enable_watcher();
+        echo 'Gateway watcher enable/restart command completed.' . PHP_EOL;
     "
 
     # Register/fix package in installedpackages so pfSense menu can render Services entry
+    echo "[4/4] Registering package and Services menu..."
     /usr/local/bin/php -r "
         require_once('/etc/inc/globals.inc');
         require_once('/etc/inc/functions.inc');
         require_once('/etc/inc/config.inc');
         global \$config;
-        \$config = parse_config(true);
+        if (function_exists('config_read_file')) {
+            if (!config_read_file(false, false)) {
+                throw new RuntimeException('MWDDNS: configuration reload failed.');
+            }
+        } elseif (function_exists('parse_config')) {
+            \$config = parse_config(true);
+        } else {
+            throw new RuntimeException('MWDDNS: no supported configuration API.');
+        }
+        if (!is_array(\$config) || empty(\$config)) {
+            throw new RuntimeException('MWDDNS: empty configuration; refusing to continue.');
+        }
         \$pkgDescr = 'Multi-WAN DDNS';
 
         \$packages = \$config['installedpackages']['package'] ?? [];
@@ -231,21 +280,24 @@ install_files() {
         if (\$changed) {
             \$config['installedpackages']['package'] = array_values(\$packages);
             \$config['installedpackages']['menu'] = array_values(\$menus);
-            write_config('MWDDNS: register/fix package and menu for Services');
+            if (write_config('MWDDNS: register/fix package and menu for Services') === false) {
+                throw new RuntimeException('MWDDNS: configuration write failed.');
+            }
             echo (\$found ? 'Package registration updated.' : 'Package registration added.') . PHP_EOL;
             echo (\$menuFound ? 'Menu registration updated.' : 'Menu registration added.') . PHP_EOL;
         } else {
             echo 'Package/menu registration already valid.' . PHP_EOL;
         }
-    " 2>/dev/null || true
+    "
 
     echo "==> Installation complete."
     echo "    Navigate to Services > Multi-WAN DDNS in the pfSense web UI."
+    echo "    Check watcher status: ${WATCHER_RC} onestatus"
 }
 
 # ---------------------------------------------------------------------------
 # purge_config: delete the mwddns section from pfSense config.xml using the
-#               official PHP config API (parse_config / write_config).
+#               official PHP config API (config_read_file / write_config).
 #               Must NOT use sed/awk to edit config.xml directly.
 # ---------------------------------------------------------------------------
 purge_config() {
@@ -255,15 +307,28 @@ purge_config() {
         require_once('/etc/inc/functions.inc');
         require_once('/etc/inc/config.inc');
         global \$config;
-        \$config = parse_config(true);
+        if (function_exists('config_read_file')) {
+            if (!config_read_file(false, false)) {
+                throw new RuntimeException('MWDDNS: configuration reload failed.');
+            }
+        } elseif (function_exists('parse_config')) {
+            \$config = parse_config(true);
+        } else {
+            throw new RuntimeException('MWDDNS: no supported configuration API.');
+        }
+        if (!is_array(\$config) || empty(\$config)) {
+            throw new RuntimeException('MWDDNS: empty configuration; refusing to continue.');
+        }
         if (isset(\$config['mwddns'])) {
             unset(\$config['mwddns']);
-            write_config('MWDDNS: configuration purged by uninstall');
+            if (write_config('MWDDNS: configuration purged by uninstall') === false) {
+                throw new RuntimeException('MWDDNS: configuration write failed.');
+            }
             echo 'MWDDNS configuration removed from config.xml.' . PHP_EOL;
         } else {
             echo 'No MWDDNS configuration found in config.xml (nothing to purge).' . PHP_EOL;
         }
-    " 2>/dev/null || true
+    "
 }
 
 # ---------------------------------------------------------------------------
@@ -282,12 +347,23 @@ uninstall_files() {
         require_once('/etc/inc/functions.inc');
         require_once('/etc/inc/config.inc');
         require_once('/usr/local/pkg/mwddns.inc');
-        \$config = parse_config(true);
+        if (function_exists('config_read_file')) {
+            if (!config_read_file(false, false)) {
+                throw new RuntimeException('MWDDNS: configuration reload failed.');
+            }
+        } elseif (function_exists('parse_config')) {
+            \$config = parse_config(true);
+        } else {
+            throw new RuntimeException('MWDDNS: no supported configuration API.');
+        }
+        if (!is_array(\$config) || empty(\$config)) {
+            throw new RuntimeException('MWDDNS: empty configuration; refusing to continue.');
+        }
         mwddns_remove_cron();
         mwddns_disable_watcher();
         echo 'Cron job removed.' . PHP_EOL;
         echo 'Gateway watcher disabled.' . PHP_EOL;
-    " 2>/dev/null || true
+    "
 
     # Step 2 – purge config if requested and confirmed
     if [ "${_do_purge}" = "1" ]; then
@@ -300,7 +376,18 @@ uninstall_files() {
         require_once('/etc/inc/functions.inc');
         require_once('/etc/inc/config.inc');
         global \$config;
-        \$config = parse_config(true);
+        if (function_exists('config_read_file')) {
+            if (!config_read_file(false, false)) {
+                throw new RuntimeException('MWDDNS: configuration reload failed.');
+            }
+        } elseif (function_exists('parse_config')) {
+            \$config = parse_config(true);
+        } else {
+            throw new RuntimeException('MWDDNS: no supported configuration API.');
+        }
+        if (!is_array(\$config) || empty(\$config)) {
+            throw new RuntimeException('MWDDNS: empty configuration; refusing to continue.');
+        }
 
         \$packages = \$config['installedpackages']['package'] ?? [];
         if (isset(\$packages['name'])) {
@@ -339,25 +426,31 @@ uninstall_files() {
         if (\$changed) {
             \$config['installedpackages']['package'] = array_values(\$filtered);
             \$config['installedpackages']['menu'] = array_values(\$menuFiltered);
-            write_config('MWDDNS: unregister package and menu from Services');
+            if (write_config('MWDDNS: unregister package and menu from Services') === false) {
+                throw new RuntimeException('MWDDNS: configuration write failed.');
+            }
             echo 'Package registration removed.' . PHP_EOL;
             echo (\$menuChanged ? 'Menu registration removed.' : 'Menu registration not found.') . PHP_EOL;
         } else {
             echo 'Package registration not found.' . PHP_EOL;
             if (\$menuChanged) {
                 \$config['installedpackages']['menu'] = array_values(\$menuFiltered);
-                write_config('MWDDNS: remove orphan menu registration');
+                if (write_config('MWDDNS: remove orphan menu registration') === false) {
+                    throw new RuntimeException('MWDDNS: configuration write failed.');
+                }
                 echo 'Menu registration removed.' . PHP_EOL;
             } else {
                 echo 'Menu registration not found.' . PHP_EOL;
             }
         }
-    " 2>/dev/null || true
+    "
 
     # Step 3 – delete plugin files and provider directory
     rm -f "${PKG_INC}" "${PKG_XML}" "${WWW_MAIN}" "${WWW_EDIT}" \
           "${WWW_WIDGET}" "${CRON_SCRIPT}" \
-          "${WATCHER_PY}" "${WATCHER_RC}"
+          "${WATCHER_PY}" "${WATCHER_RC}" "${WWW_DEBUG}" \
+          "${DEBUG_PY}" "${DEBUG_SNAPSHOT}" "${WWW_UPGRADE}" \
+          "${UPGRADE_PY}" "${UPGRADE_CONFIG}"
     rm -rf /usr/local/pkg/mwddns
 
     # Remove runtime metadata state file and clean empty directory

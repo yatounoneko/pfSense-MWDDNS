@@ -1,0 +1,2 @@
+# Repository text targets FreeBSD/pfSense; preserve binary files automatically.
+* text=auto eol=lf

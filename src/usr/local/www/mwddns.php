@@ -18,6 +18,7 @@
 require_once('guiconfig.inc');
 require_once('/usr/local/pkg/mwddns.inc');
 
+$actionError = '';
 // ── Handle delete action (POST + CSRF) ───────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'del' && isset($_POST['id'])) {
     $token = (string)($_POST['mwddns_csrf_token'] ?? '');
@@ -25,10 +26,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'del' && 
         header('Location: /mwddns.php');
         exit;
     }
-    $id = (int)$_POST['id'];
-    mwddns_delete_rule($id);
-    header('Location: /mwddns.php?msg=deleted');
-    exit;
+    try {
+        if (!is_string($_POST['id']) || !ctype_digit($_POST['id']) ||
+            !is_string($_POST['mwddns_revision'] ?? null)) {
+            throw new RuntimeException('Invalid form data.');
+        }
+        mwddns_delete_rule((int)$_POST['id'], $_POST['mwddns_revision']);
+        header('Location: /mwddns.php?msg=deleted');
+        exit;
+    } catch (Throwable $e) {
+        $actionError = mwddns_t($e instanceof RuntimeException
+            ? $e->getMessage()
+            : 'Configuration could not be saved. No DNS update was started.');
+    }
 }
 
 // ── Load data ─────────────────────────────────────────────────────────────────
@@ -56,6 +66,12 @@ if (isset($_GET['msg'])) {
             break;
     }
 }
+
+if ($actionError !== '') {
+    $message = $actionError;
+    $msgtype = 'danger';
+}
+$formRevision = mwddns_rules_revision($rules);
 
 $pgtitle = [mwddns_t('Services'), mwddns_t('Multi-WAN DDNS')];
 $pglinks = ['', '/mwddns.php'];
@@ -111,8 +127,8 @@ include('head.inc');
         $types    = mwddns_rule_record_types($rule);
         // Provider-aware status lookup:
         // proxy-enabled providers can use API record listing instead of public DNS.
-        $dnsIPv4  = in_array('A',    $types, true) ? mwddns_rule_record_observed_ips($rule, 'A')    : [];
-        $dnsIPv6  = in_array('AAAA', $types, true) ? mwddns_rule_record_observed_ips($rule, 'AAAA') : [];
+        $dnsIPv4  = in_array('A',    $types, true) ? mwddns_cached_observed_ips($rule, 'A')    : [];
+        $dnsIPv6  = in_array('AAAA', $types, true) ? mwddns_cached_observed_ips($rule, 'AAAA') : [];
         $provName = mwddns_provider_name($rule['provider'] ?? 'cloudflare');
 ?>
                     <tr>
@@ -133,28 +149,28 @@ include('head.inc');
                                     <small class="text-muted">(<?= htmlspecialchars($info['ifname']) ?>)</small>:
                                 </strong>
 <?php if (in_array('A', $types, true)): ?>
-<?php   if ($info['ipv4'] !== null): $inSync = in_array($info['ipv4'], $dnsIPv4, true); ?>
-                                <span class="<?= $inSync ? 'text-success' : 'text-danger' ?>"
-                                      title="A: <?= $inSync
+<?php   if ($info['ipv4'] !== null): $known = $dnsIPv4 !== null; $inSync = $known && in_array($info['ipv4'], $dnsIPv4, true); ?>
+                                <span class="<?= !$known ? 'text-muted' : ($inSync ? 'text-success' : 'text-danger') ?>"
+                                      title="A: <?= !$known ? mwddns_t('Status pending or stale.') : ($inSync
                                           ? mwddns_t('DNS record matches this IP')
-                                          : mwddns_t('DNS record does NOT contain this IP') ?>">
+                                          : mwddns_t('DNS record does NOT contain this IP')) ?>">
                                     <?= htmlspecialchars($info['ipv4']) ?>
                                     <small class="text-muted">A</small>
-                                    <i class="fa fa-<?= $inSync ? 'check' : 'exclamation-triangle' ?>"></i>
+                                    <i class="fa fa-<?= !$known ? 'question-circle' : ($inSync ? 'check' : 'exclamation-triangle') ?>"></i>
                                 </span>
 <?php   else: ?>
                                 <span class="text-muted"><?= mwddns_t('No IPv4') ?></span>
 <?php   endif; ?>
 <?php endif; ?>
 <?php if (in_array('AAAA', $types, true)): ?>
-<?php   if ($info['ipv6'] !== null): $inSync = in_array($info['ipv6'], $dnsIPv6, true); ?>
-                                <span class="<?= $inSync ? 'text-success' : 'text-danger' ?>"
-                                      title="AAAA: <?= $inSync
+<?php   if ($info['ipv6'] !== null): $known = $dnsIPv6 !== null; $inSync = $known && in_array($info['ipv6'], $dnsIPv6, true); ?>
+                                <span class="<?= !$known ? 'text-muted' : ($inSync ? 'text-success' : 'text-danger') ?>"
+                                      title="AAAA: <?= !$known ? mwddns_t('Status pending or stale.') : ($inSync
                                           ? mwddns_t('DNS record matches this IP')
-                                          : mwddns_t('DNS record does NOT contain this IP') ?>">
+                                          : mwddns_t('DNS record does NOT contain this IP')) ?>">
                                     <?= htmlspecialchars($info['ipv6']) ?>
                                     <small class="text-muted">AAAA</small>
-                                    <i class="fa fa-<?= $inSync ? 'check' : 'exclamation-triangle' ?>"></i>
+                                    <i class="fa fa-<?= !$known ? 'question-circle' : ($inSync ? 'check' : 'exclamation-triangle') ?>"></i>
                                 </span>
 <?php   else: ?>
                                 <span class="text-muted"><?= mwddns_t('No IPv6') ?></span>
@@ -187,6 +203,7 @@ include('head.inc');
                             &nbsp;
                             <form method="post" action="/mwddns.php" style="display:inline">
                                 <?= mwddns_csrf_input() ?>
+                                <input type="hidden" name="mwddns_revision" value="<?= htmlspecialchars($formRevision) ?>">
                                 <input type="hidden" name="act" value="del">
                                 <input type="hidden" name="id" value="<?= (int)$id ?>">
                                 <button type="submit" class="fa fa-trash btn btn-link p-0"
@@ -206,6 +223,14 @@ include('head.inc');
 </div><!-- panel -->
 
 <nav class="action-buttons">
+    <a href="/mwddns_upgrade.php" class="btn btn-default btn-sm">
+        <i class="fa fa-upload icon-embed-btn"></i>
+        <?= mwddns_t('Plugin upgrade') ?>
+    </a>
+    <a href="/mwddns_debug.php" class="btn btn-default btn-sm">
+        <i class="fa fa-bug icon-embed-btn"></i>
+        <?= mwddns_t('Debug information') ?>
+    </a>
     <a href="/mwddns_edit.php" class="btn btn-success btn-sm">
         <i class="fa fa-plus icon-embed-btn"></i>
         <?= mwddns_t('Add') ?>

@@ -12,7 +12,18 @@ pidfile="/var/run/${name}.pid"
 command="/usr/sbin/daemon"
 python_bin="/usr/local/bin/python3.11"
 watcher_script="/usr/local/bin/mwddns_gateway_watcher.py"
-command_args="-f -p ${pidfile} ${python_bin} ${watcher_script}"
+procname="${python_bin}"
+# Release inherited PHP/mwexec pipes; -S still sends watcher output to syslog.
+command_args="-f -S -T ${name} -p ${pidfile} ${python_bin} -u ${watcher_script}"
+start_precmd="mwddns_watcher_prestart"
+
+mwddns_watcher_prestart()
+{
+    if [ ! -x "${python_bin}" ] || [ ! -r "${watcher_script}" ]; then
+        warn "MWDDNS requires ${python_bin} and ${watcher_script}"
+        return 1
+    fi
+}
 
 load_rc_config "${name}"
 : ${mwddns_watcher_enable:="YES"}
