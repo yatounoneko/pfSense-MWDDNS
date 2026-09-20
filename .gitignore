@@ -10,6 +10,10 @@
 !/CHANGELOG.md
 !/THIRD_PARTY_NOTICES.md
 !/install.sh
+!/docs/
+/docs/**
+!/docs/debug-information.md
+!/docs/pfsense-compatibility.md
 !/src/
 /src/**
 !/src/usr/
