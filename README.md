@@ -74,7 +74,7 @@ Traditional Chinese (`zh_HK` / `zh_TW`).
 
 ## Requirements
 
-- **pfSense CE.** 2.8.1 is the user-reported operational baseline. The 2.9.0 upgrade exposed a removed configuration API; this tree contains source-level compatibility fixes, **not completed on-device certification**. Older-version fallbacks remain, but 2.7.x and 2.9.x must not be read as universally tested.
+- **pfSense CE 2.9.0**, see [version support](#version-support) below.
 - **Python 3.11**, installed as the pfSense `python311` package.
 - **Credentials for at least one supported provider:**
 
@@ -84,6 +84,20 @@ Traditional Chinese (`zh_HK` / `zh_TW`).
 | Alibaba Cloud DNS (intl / CN) | AccessKey ID + AccessKey Secret + root domain |
 | Alibaba Cloud ESA | AccessKey ID + AccessKey Secret + Site ID |
 | PowerDNS | API URL + API key + server ID + zone name |
+
+### Version support
+
+| pfSense CE | Status |
+|---|---|
+| **2.9.0** | **Verified on hardware.** Current baseline. |
+| 2.8.x | Not device-tested. Takes the same primary code path as 2.9.0, so it is expected to work. |
+| 2.7.x | Not device-tested. Relies on the legacy configuration-API fallback. |
+
+For this plugin 2.9.0 is a removal, not an addition: it deleted the legacy
+`parse_config()` configuration reader and added nothing MWDDNS needs. The plugin
+prefers `config_read_file()`, which has existed since 2.8.0, and falls back to
+`parse_config()` on 2.7.x, so 2.8.x and 2.9.x run the same primary path. Full
+analysis: [docs/pfsense-compatibility.md](docs/pfsense-compatibility.md).
 
 ---
 
@@ -102,7 +116,7 @@ python3.11 --version   # verify
 
 ### 2. Install the plugin over SSH
 
-On pfSense 2.8.1 you must first enable **System > Advanced > Secure Shell**.
+Enable **System > Advanced > Secure Shell** first.
 
 Connect from any terminal, replacing the address (and port, if customized):
 

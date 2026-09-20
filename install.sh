@@ -1,7 +1,7 @@
 #!/bin/sh
 # install.sh – Manual installation helper for pfSense-MWDDNS
 #
-# Run this script from the repository root on a pfSense 2.7/2.8 firewall
+# Run this script from the repository root on a pfSense CE 2.7.x-2.9.x firewall
 # (or copy files to the correct paths manually).
 #
 # Usage:
