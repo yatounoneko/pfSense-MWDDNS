@@ -74,7 +74,7 @@ Traditional Chinese (`zh_HK` / `zh_TW`).
 
 ## Requirements
 
-- **pfSense CE 2.9.0**, see [version support](#version-support) below.
+- **pfSense CE 2.8.0 or later.** 2.9.0 is verified on hardware; see [version support](#version-support).
 - **Python 3.11**, installed as the pfSense `python311` package.
 - **Credentials for at least one supported provider:**
 
@@ -90,14 +90,14 @@ Traditional Chinese (`zh_HK` / `zh_TW`).
 | pfSense CE | Status |
 |---|---|
 | **2.9.0** | **Verified on hardware.** Current baseline. |
-| 2.8.x | Not device-tested. Takes the same primary code path as 2.9.0, so it is expected to work. |
-| 2.7.x | Not device-tested. Relies on the legacy configuration-API fallback. |
+| 2.8.x | Not device-tested. Takes the same code path as 2.9.0, so it is expected to work. |
+| 2.7.x and earlier | **Not supported.** The installer refuses to run and changes nothing. |
 
 For this plugin 2.9.0 is a removal, not an addition: it deleted the legacy
-`parse_config()` configuration reader and added nothing MWDDNS needs. The plugin
-prefers `config_read_file()`, which has existed since 2.8.0, and falls back to
-`parse_config()` on 2.7.x, so 2.8.x and 2.9.x run the same primary path. Full
-analysis: [docs/pfsense-compatibility.md](docs/pfsense-compatibility.md).
+`parse_config()` configuration reader and added nothing MWDDNS needs. MWDDNS
+uses `config_read_file()`, which has existed since 2.8.0, so 2.8.x and 2.9.x run
+the same code path. Full analysis, including what to do with an existing 2.7.x
+installation: [docs/pfsense-compatibility.md](docs/pfsense-compatibility.md).
 
 ---
 

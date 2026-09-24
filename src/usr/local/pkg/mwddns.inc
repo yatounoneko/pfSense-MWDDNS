@@ -34,19 +34,16 @@ define('MWDDNS_WATCHER_RCVAR','mwddns_watcher_enable');
  */
 /**
  * Reload through pfSense's supported API without assigning its boolean return
- * value to $config. Older installations retain the legacy API fallback.
+ * value to $config. config_read_file() exists from pfSense CE 2.8.0.
  */
 function mwddns_reload_config(): void
 {
     global $config;
-    if (function_exists('config_read_file')) {
-        if (!config_read_file(false, false)) {
-            throw new RuntimeException('MWDDNS: pfSense configuration reload failed.');
-        }
-    } elseif (function_exists('parse_config')) {
-        $config = parse_config(true);
-    } else {
-        throw new RuntimeException('MWDDNS: no supported pfSense configuration API.');
+    if (!function_exists('config_read_file')) {
+        throw new RuntimeException('MWDDNS: pfSense CE 2.8.0 or later is required.');
+    }
+    if (!config_read_file(false, false)) {
+        throw new RuntimeException('MWDDNS: pfSense configuration reload failed.');
     }
     if (!is_array($config) || empty($config)) {
         throw new RuntimeException('MWDDNS: refusing to operate with an empty configuration.');

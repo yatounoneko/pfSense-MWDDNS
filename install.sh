@@ -1,7 +1,7 @@
 #!/bin/sh
 # install.sh – Manual installation helper for pfSense-MWDDNS
 #
-# Run this script from the repository root on a pfSense CE 2.7.x-2.9.x firewall
+# Run this script from the repository root on a pfSense CE 2.8.0 or later firewall
 # (or copy files to the correct paths manually).
 #
 # Usage:
@@ -73,6 +73,32 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# require_supported_pfsense: stop before touching anything on pfSense < 2.8.0.
+#   config_read_file() exists from pfSense CE 2.8.0; 2.7.x is not supported.
+#   Pass "uninstall" to print how to remove an older installation instead.
+# ---------------------------------------------------------------------------
+require_supported_pfsense() {
+    _api_rc=0
+    /usr/local/bin/php -r "
+        require_once('/etc/inc/globals.inc');
+        require_once('/etc/inc/functions.inc');
+        require_once('/etc/inc/config.inc');
+        exit(function_exists('config_read_file') ? 0 : 3);
+    " >/dev/null 2>&1 || _api_rc=$?
+    if [ "${_api_rc}" -eq 3 ]; then
+        echo "ERROR: MWDDNS requires pfSense CE 2.8.0 or later. Nothing was changed." >&2
+        if [ "${1:-}" = "uninstall" ]; then
+            echo "To remove it from an older pfSense, run --uninstall with the install.sh" >&2
+            echo "of the MWDDNS release that is installed (1.1.2 or earlier)." >&2
+        fi
+        exit 1
+    elif [ "${_api_rc}" -ne 0 ]; then
+        echo "ERROR: Unable to load the pfSense configuration library. Nothing was changed." >&2
+        exit 1
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # install_files: copy plugin to pfSense target paths and register cron
 # ---------------------------------------------------------------------------
 install_files() {
@@ -86,6 +112,7 @@ install_files() {
         echo "Use the matching pfSense package repository for python311; do not assume python3 exists." >&2
         exit 1
     fi
+    require_supported_pfsense
 
     echo "[1/4] Copying plugin files..."
     install -m 0644 "${SRC}/usr/local/pkg/mwddns.inc" "${PKG_INC}"
@@ -137,14 +164,11 @@ install_files() {
         require_once('/etc/inc/functions.inc');
         require_once('/etc/inc/config.inc');
         require_once('/usr/local/pkg/mwddns.inc');
-        if (function_exists('config_read_file')) {
-            if (!config_read_file(false, false)) {
-                throw new RuntimeException('MWDDNS: configuration reload failed.');
-            }
-        } elseif (function_exists('parse_config')) {
-            \$config = parse_config(true);
-        } else {
-            throw new RuntimeException('MWDDNS: no supported configuration API.');
+        if (!function_exists('config_read_file')) {
+            throw new RuntimeException('MWDDNS: pfSense CE 2.8.0 or later is required.');
+        }
+        if (!config_read_file(false, false)) {
+            throw new RuntimeException('MWDDNS: configuration reload failed.');
         }
         if (!is_array(\$config) || empty(\$config)) {
             throw new RuntimeException('MWDDNS: empty configuration; refusing to continue.');
@@ -163,14 +187,11 @@ install_files() {
         require_once('/etc/inc/functions.inc');
         require_once('/etc/inc/config.inc');
         global \$config;
-        if (function_exists('config_read_file')) {
-            if (!config_read_file(false, false)) {
-                throw new RuntimeException('MWDDNS: configuration reload failed.');
-            }
-        } elseif (function_exists('parse_config')) {
-            \$config = parse_config(true);
-        } else {
-            throw new RuntimeException('MWDDNS: no supported configuration API.');
+        if (!function_exists('config_read_file')) {
+            throw new RuntimeException('MWDDNS: pfSense CE 2.8.0 or later is required.');
+        }
+        if (!config_read_file(false, false)) {
+            throw new RuntimeException('MWDDNS: configuration reload failed.');
         }
         if (!is_array(\$config) || empty(\$config)) {
             throw new RuntimeException('MWDDNS: empty configuration; refusing to continue.');
@@ -308,14 +329,11 @@ purge_config() {
         require_once('/etc/inc/functions.inc');
         require_once('/etc/inc/config.inc');
         global \$config;
-        if (function_exists('config_read_file')) {
-            if (!config_read_file(false, false)) {
-                throw new RuntimeException('MWDDNS: configuration reload failed.');
-            }
-        } elseif (function_exists('parse_config')) {
-            \$config = parse_config(true);
-        } else {
-            throw new RuntimeException('MWDDNS: no supported configuration API.');
+        if (!function_exists('config_read_file')) {
+            throw new RuntimeException('MWDDNS: pfSense CE 2.8.0 or later is required.');
+        }
+        if (!config_read_file(false, false)) {
+            throw new RuntimeException('MWDDNS: configuration reload failed.');
         }
         if (!is_array(\$config) || empty(\$config)) {
             throw new RuntimeException('MWDDNS: empty configuration; refusing to continue.');
@@ -342,6 +360,7 @@ uninstall_files() {
     _do_purge="${1:-0}"
 
     echo "==> Removing Multi-WAN DDNS plugin..."
+    require_supported_pfsense uninstall
 
     # Step 1 – remove cron job
     /usr/local/bin/php -r "
@@ -349,14 +368,11 @@ uninstall_files() {
         require_once('/etc/inc/functions.inc');
         require_once('/etc/inc/config.inc');
         require_once('/usr/local/pkg/mwddns.inc');
-        if (function_exists('config_read_file')) {
-            if (!config_read_file(false, false)) {
-                throw new RuntimeException('MWDDNS: configuration reload failed.');
-            }
-        } elseif (function_exists('parse_config')) {
-            \$config = parse_config(true);
-        } else {
-            throw new RuntimeException('MWDDNS: no supported configuration API.');
+        if (!function_exists('config_read_file')) {
+            throw new RuntimeException('MWDDNS: pfSense CE 2.8.0 or later is required.');
+        }
+        if (!config_read_file(false, false)) {
+            throw new RuntimeException('MWDDNS: configuration reload failed.');
         }
         if (!is_array(\$config) || empty(\$config)) {
             throw new RuntimeException('MWDDNS: empty configuration; refusing to continue.');
@@ -378,14 +394,11 @@ uninstall_files() {
         require_once('/etc/inc/functions.inc');
         require_once('/etc/inc/config.inc');
         global \$config;
-        if (function_exists('config_read_file')) {
-            if (!config_read_file(false, false)) {
-                throw new RuntimeException('MWDDNS: configuration reload failed.');
-            }
-        } elseif (function_exists('parse_config')) {
-            \$config = parse_config(true);
-        } else {
-            throw new RuntimeException('MWDDNS: no supported configuration API.');
+        if (!function_exists('config_read_file')) {
+            throw new RuntimeException('MWDDNS: pfSense CE 2.8.0 or later is required.');
+        }
+        if (!config_read_file(false, false)) {
+            throw new RuntimeException('MWDDNS: configuration reload failed.');
         }
         if (!is_array(\$config) || empty(\$config)) {
             throw new RuntimeException('MWDDNS: empty configuration; refusing to continue.');

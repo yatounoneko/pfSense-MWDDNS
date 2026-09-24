@@ -1,18 +1,15 @@
 # pfSense version compatibility
 
-MWDDNS targets pfSense CE. One version is verified on real hardware; the others
-are expected to work from source-level analysis but carry no device testing.
+MWDDNS requires pfSense CE 2.8.0 or later. One version is verified on real
+hardware; 2.8.x is expected to work from source-level analysis.
 
 ## Support matrix
 
-| pfSense CE | Status | Configuration reader used |
-|---|---|---|
-| **2.9.0** | **Verified on hardware.** Current baseline. | `config_read_file()` |
-| 2.8.x | Not device-tested. Takes the same primary code path as 2.9.0, so it is expected to work. | `config_read_file()` |
-| 2.7.x | Not device-tested. Depends on the legacy fallback below. | `parse_config()` |
-
-Earlier releases are unsupported: they provide neither API in a form the plugin
-accepts.
+| pfSense CE | Status |
+|---|---|
+| **2.9.0** | **Verified on hardware.** Current baseline. |
+| 2.8.x | Not device-tested. Takes the same code path as 2.9.0, so it is expected to work. |
+| 2.7.x and earlier | **Not supported.** The installer refuses to run and changes nothing. |
 
 ## What 2.9.0 changed
 
@@ -26,25 +23,31 @@ MWDDNS needs, because `config_read_file()` has existed since 2.8.0.
 | `parse_config()` reduced to a backwards-compatibility stub (`485fe02`, 2024-08-15) | 2.8.0 | Both readers available |
 | `parse_config()` removed (`0e56ef4`, 2025-10-08) | 2.9.0 | Legacy reader gone |
 
-So 2.8.x and 2.9.x expose the same reader, and only 2.7.x is limited to the old
-one.
+2.8.x and 2.9.x therefore expose the same reader. 2.7.x has only the removed
+one, which is why support starts at 2.8.0.
 
-## How MWDDNS handles it
+## How MWDDNS reads the configuration
 
-`mwddns_reload_config()` in `mwddns.inc`, and the equivalent PHP snippets in
-`install.sh`, probe at runtime instead of testing a version string:
+Every configuration reload calls `config_read_file(false, false)`: the
+`mwddns_reload_config()` function in `mwddns.inc`, the WebGUI upgrade helper,
+and the PHP snippets in `install.sh`. If the function is missing they abort
+rather than operate on an empty configuration.
 
-1. If `config_read_file()` exists, use it. This is the path on 2.8.x and 2.9.x.
-2. Otherwise, if `parse_config()` exists, use it. This is the path on 2.7.x.
-3. Otherwise abort, rather than operate on an empty configuration.
+`install.sh` checks for `config_read_file()` before it copies or removes any
+file, so an install or uninstall on 2.7.x stops with nothing changed.
 
-Both arguments are passed explicitly as `config_read_file(false, false)`, so
-2.9.0 changing the `$use_cache` default from `false` to `true` does not alter
-plugin behaviour.
+Both arguments are passed explicitly, so 2.9.0 changing the `$use_cache` default
+from `false` to `true` does not alter plugin behaviour. Because 2.8.x and 2.9.x
+take the same path, the code exercised by the verified 2.9.0 installation is the
+same code that runs on 2.8.x.
 
-Because step 1 is taken on both 2.8.x and 2.9.x, the code exercised by the
-verified 2.9.0 installation is the same code that runs on 2.8.x. Step 2 is the
-only path that no device-tested version reaches.
+## Existing 2.7.x installations
+
+Releases up to 1.1.2 carried an untested `parse_config()` fallback; later
+releases removed it.
+
+- **To keep using MWDDNS,** upgrade pfSense to 2.8.0 or later first, then upgrade MWDDNS. A WebGUI upgrade attempted on 2.7.x fails, and the newer installer refuses to run.
+- **To remove MWDDNS,** run `sh install.sh --uninstall` from the MWDDNS release that is installed, not from a newer one.
 
 ## Every other pfSense function the plugin calls
 
@@ -57,11 +60,10 @@ versions are probed with `function_exists()` before use.
 | `get_interface_ip`, `get_interface_ipv6`, `get_configured_interface_list` | No: present in every supported version |
 | `get_real_interface`, `convert_real_interface_to_friendly_interface_name`, `return_gateways_array` | Yes |
 | `isAdminUID`, `getUserEntry`, `userHasPrivilege` | Yes |
-| `config_read_file`, `parse_config` | Yes |
+| `config_read_file` | Yes; the installer checks it before changing anything |
 
 ## Limits of this statement
 
-- Only 2.9.0 has been exercised on a real firewall. The 2.7.x and 2.8.x rows rest on source-level analysis and the runtime fallback, not on testing.
+- Only 2.9.0 has been exercised on a real firewall. The 2.8.x row rests on source-level analysis, not on testing.
 - A matching function name is not proof of unchanged behaviour. A signature or semantic change inside a function that still exists would not be caught by the check above.
-- 2.9.0 also moves to PHP 8.4 and migrates `config.xml` entity encoding from `ENT_HTML401` to `ENT_XML1`. MWDDNS never parses `config.xml` itself; it reads and writes only through the pfSense configuration API.
-- The 2.7.x fallback path has no device coverage at all. Treat 2.7.x as best-effort.
+- 2.9.0 also moves to PHP 8.5.7 and migrates `config.xml` entity encoding from `ENT_HTML401` to `ENT_XML1`. MWDDNS never parses `config.xml` itself; it reads and writes only through the pfSense configuration API.
