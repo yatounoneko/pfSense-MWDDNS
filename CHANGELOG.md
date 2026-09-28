@@ -5,11 +5,13 @@ See [README.md](README.md) for installation, usage and current operational guida
 
 ## 1.1.3 release
 
-- Require pfSense CE 2.8.0 or later. 2.9.0 is verified on hardware, 2.8.x takes
-  the same code path, and 2.7.x is no longer supported. Remove the
-  `parse_config()` fallback. `install.sh` now checks for `config_read_file()`
-  before changing any file, and also stops when pfSense cannot load its
-  configuration, even though pfSense exits with status 0 in that case.
+- Require pfSense CE 2.8.0 or later; 2.7.x is no longer supported. 2.9.0
+  remains the platform baseline verified on hardware with earlier releases,
+  and 2.8.x support rests on source-level analysis.
+- Remove the `parse_config()` fallback. `install.sh` checks for
+  `config_read_file()` before copying or removing plugin files. It also rejects
+  a configuration load that ends before the success marker is printed,
+  including early exits with status 0.
 - Rewrite the Alibaba Cloud ESA provider for the ESA 2024-09-10 RPC API and the
   OpenAPI V3 (ACS3-HMAC-SHA256) signature; earlier requests could not succeed.
   Keep one A/AAAA record per hostname holding every address, as ESA requires,
@@ -20,18 +22,26 @@ See [README.md](README.md) for installation, usage and current operational guida
   before these settings keep the ESA console settings, and a deletion that
   could not later be restored is refused until the rule is saved. The RAM
   policy needs `esa:GetSite` and the four record actions.
-- Read every AliDNS and Cloudflare listing page before syncing, so stale records
-  beyond the first page are deleted. An incomplete listing changes nothing.
+- Check ESA status through the API for proxied rules and for rules saved before
+  the proxy setting existed, so origin addresses are not compared with ESA edge
+  addresses.
+- Read every AliDNS and Cloudflare listing page before syncing each address
+  family, so stale records beyond the first page are deleted. An incomplete
+  listing skips changes for that family; other families may still be updated.
 - Update Cloudflare records with PATCH, preserving their comments, tags and
   settings, and compare IPv6 addresses in canonical form.
 - PowerDNS has no automatic TTL, so TTL 1 now publishes 300 seconds instead of
   one second.
 - Reorganise the README and move the Debug and pfSense compatibility references
   to `docs/`.
-- Existing 1.1.1 and 1.1.2 installations on pfSense 2.8.0 or later can use the
-  GitHub check/download or a manual ZIP upload with Preserve data. Upgrade
-  pfSense 2.7.x to 2.8.0 or later first. After upgrading, open and save each
-  ESA rule to choose its proxy settings explicitly.
+- Existing 1.1.1 and 1.1.2 installations on pfSense 2.8.0 or later can upgrade
+  with Preserve data: through the GitHub check/download once the 1.1.3 release
+  ZIP is published, or by manual ZIP upload. Upgrade pfSense 2.7.x to 2.8.0 or
+  later first. After upgrading, open and save each ESA rule to choose its proxy
+  settings explicitly.
+- The 1.1.3 changes were checked offline against stubbed pfSense functions and
+  mock provider APIs. They have not yet been tested on a real firewall or
+  against live provider accounts.
 
 ## 1.1.2 release
 
