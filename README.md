@@ -13,15 +13,15 @@ Current version: **1.1.3** &nbsp;•&nbsp; License: **Apache-2.0** &nbsp;•&nbs
 
 **Dashboard widget**
 
-<img width="auto" height="150" alt="Dashboard widget" src="https://github.com/user-attachments/assets/fc0b71f2-c7f2-4889-b89c-3705e9a2acca" />
+<img width="auto" height="150" alt="Dashboard widget" src="https://github.com/user-attachments/assets/a0319c3a-c4e3-4993-b52d-5fed52409e00" />
 
 **Portal / status page**
 
-<img width="800" height="auto" alt="Portal status page" src="https://github.com/user-attachments/assets/73700895-9a3c-48ed-b622-b094f6b5ebb9" />
+<img width="900" height="auto" alt="Portal / status page" src="https://github.com/user-attachments/assets/a35b5097-5d4a-45aa-8806-7039e6c80eae" />
 
 **Rule configuration**
 
-<img width="800" height="auto" alt="Rule configuration page" src="https://github.com/user-attachments/assets/b8efbede-9f06-4c27-941d-2a5e1cb238cd" />
+<img width="900" height="auto" alt="Rule configuration" src="https://github.com/user-attachments/assets/fb6daf0a-a8ec-425e-8f6f-e0dead796236" />
 
 ---
 
