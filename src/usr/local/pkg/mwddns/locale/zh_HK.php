@@ -257,8 +257,8 @@ return [
     'Root Domain must be a valid domain name (e.g. example.com).'          => '根網域必須是有效的網域名稱（例如：example.com）。',
 
     /* ── aliesa.php ─────────────────────────────────────────────────────── */
-    'Found in Alibaba Cloud Console → AccessKey Management. Use a RAM sub-account with ESA DNS permissions only.'
-                                                                            => '在阿里雲控制台 → AccessKey 管理中查看。建議使用僅具有 ESA DNS 權限的 RAM 子帳號。',
+    'Found in Alibaba Cloud Console → AccessKey Management. Use a RAM sub-account allowed only esa:GetSite, esa:ListRecords, esa:CreateRecord, esa:UpdateRecord and esa:DeleteRecord.'
+                                                                            => '在阿里雲控制台 → AccessKey 管理中查看。建議使用僅允許 esa:GetSite、esa:ListRecords、esa:CreateRecord、esa:UpdateRecord 及 esa:DeleteRecord 的 RAM 子帳號。',
     'Keep secret. Stored in plain text in pfSense config.xml.'             => '請妥善保管。以明文形式儲存於 pfSense config.xml 中。',
     'ESA Site ID'                                                           => 'ESA 站點 ID',
     'e.g. 123456789'                                                        => '例如：123456789',

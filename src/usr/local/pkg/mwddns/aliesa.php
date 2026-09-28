@@ -65,7 +65,7 @@ function mwddns_aliesa_fields(): array
             'type'        => 'text',
             'required'    => true,
             'placeholder' => mwddns_t('Alibaba Cloud AccessKey ID'),
-            'help'        => mwddns_t('Found in Alibaba Cloud Console → AccessKey Management. Use a RAM sub-account with ESA DNS permissions only.'),
+            'help'        => mwddns_t('Found in Alibaba Cloud Console → AccessKey Management. Use a RAM sub-account allowed only esa:GetSite, esa:ListRecords, esa:CreateRecord, esa:UpdateRecord and esa:DeleteRecord.'),
         ],
         [
             'key'         => 'access_key_secret',
@@ -153,9 +153,11 @@ function mwddns_aliesa_update(array $ipsByType, array $rule): array
     };
 
     // Everything below is read before the first write, so a bad setting changes nothing.
-    $site = mwddns_aliesa_get_site($api);
+    $siteError = '';
+    $site = mwddns_aliesa_get_site($api, $siteError);
     if ($site === null) {
-        return $fail('Failed to read the site from Alibaba Cloud ESA.');
+        // The API reason is kept: a RAM policy without esa:GetSite fails here.
+        return $fail('Failed to read the site from Alibaba Cloud ESA (GetSite: ' . $siteError . ').');
     }
     $apex = $host === $site['name'];
     if (!$apex && !str_ends_with($host, '.' . $site['name'])) {
@@ -216,8 +218,28 @@ function mwddns_aliesa_update(array $ipsByType, array $rule): array
         }
     };
 
+    // A legacy rule has no saved proxy settings, so a deleted record would be
+    // re-created with the site default. Refuse deletions that would lose them.
+    $keepLegacy = static function () use ($proxy, $records): ?string {
+        if ($proxy['update'] !== null) {
+            return null;
+        }
+        foreach ($records as $rec) {
+            if (mwddns_aliesa_delete_loses_settings($rec, $proxy['create'])) {
+                return 'This rule was saved before the ESA proxy settings existed, and deleting its record would lose '
+                    . 'the record\'s proxy acceleration or business type. Open and save the rule with the ESA proxy '
+                    . 'settings to use; records left unchanged.';
+            }
+        }
+        return null;
+    };
+
     if (empty($desired['A']) && empty($desired['AAAA'])) {
         // Every address is gone: remove the A/AAAA records for this name.
+        $blocked = $keepLegacy();
+        if ($blocked !== null) {
+            return $fail($blocked, 'preserved');
+        }
         $allOK = true;
         $error = '';
         foreach ($records as $rec) {
@@ -240,6 +262,10 @@ function mwddns_aliesa_update(array $ipsByType, array $rule): array
         }
         // IPv4 is known to be gone. Remove the stale addresses as other
         // providers do, and report the IPv6 addresses as unpublished.
+        $blocked = $keepLegacy();
+        if ($blocked !== null) {
+            return $fail($blocked, 'preserved');
+        }
         $allOK = true;
         $error = '';
         foreach ($records as $rec) {
@@ -355,13 +381,14 @@ function mwddns_aliesa_api(array $rule): ?array
     return ['id' => $akId, 'secret' => $akSec, 'host' => $endpoint, 'site_id' => $siteId, 'name' => $host];
 }
 
-/** The site's normalised name and access type (NS or CNAME), or null on error. */
-function mwddns_aliesa_get_site(array $api): ?array
+/** The site's normalised name and access type (NS or CNAME), or null with $error set. */
+function mwddns_aliesa_get_site(array $api, ?string &$error = null): ?array
 {
     $res   = mwddns_aliesa_call($api, 'GET', 'GetSite', ['SiteId' => $api['site_id']]);
     $model = $res['ok'] ? ($res['data']['SiteModel'] ?? null) : null;
     $name  = is_array($model) ? rtrim(strtolower(trim((string)($model['SiteName'] ?? ''))), '.') : '';
     if ($name === '') {
+        $error = $res['ok'] ? 'response has no site name' : $res['error'];
         return null;
     }
     return ['name' => $name, 'access' => strtoupper(trim((string)($model['AccessType'] ?? '')))];
@@ -394,6 +421,22 @@ function mwddns_aliesa_proxy_settings(array $rule, string $access)
         return ['create' => $off, 'update' => $off];
     }
     return ['create' => $cname ? $on : $off, 'update' => null];
+}
+
+/**
+ * True when re-creating $rec with the $create parameters would not restore
+ * its proxy acceleration or business type. Unknown settings count as lost.
+ */
+function mwddns_aliesa_delete_loses_settings(array $rec, array $create): bool
+{
+    if (!is_bool($rec['Proxied'] ?? null)) {
+        return true;
+    }
+    $proxied = ($create['Proxied'] ?? 'false') === 'true';
+    if ($rec['Proxied'] !== $proxied) {
+        return true;
+    }
+    return $proxied && (string)($rec['BizName'] ?? '') !== (string)($create['BizName'] ?? '');
 }
 
 /** 'A' for IPv4, 'AAAA' for IPv6. Callers pass validated addresses only. */
@@ -503,10 +546,14 @@ function mwddns_aliesa_fetch_records(array $api, bool $apex): ?array
  * Status matching for proxied records
  * ========================================================= */
 
-/** A proxied record resolves to ESA edge addresses, so compare with the API instead. */
+/**
+ * A proxied record resolves to ESA edge addresses, so compare with the API.
+ * Legacy rules without the setting may be proxied too, so they also use the
+ * API. Only an explicit DNS-only rule is checked through recursive DNS.
+ */
 function mwddns_aliesa_should_use_api_match(array $rule): bool
 {
-    return ($rule['esa_proxied'] ?? '') === '1';
+    return ($rule['esa_proxied'] ?? '') !== '0';
 }
 
 /** Addresses of one family held in the rule's A/AAAA record, or null on error. */

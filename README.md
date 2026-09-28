@@ -211,7 +211,7 @@ Once packaged as a proper FreeBSD `.pkg`, the plugin will be installable from
 
 | Field | Description |
 |---|---|
-| AccessKey ID | RAM user AccessKey ID with ESA DNS permissions |
+| AccessKey ID | RAM user AccessKey ID allowed `esa:GetSite`, `esa:ListRecords`, `esa:CreateRecord`, `esa:UpdateRecord` and `esa:DeleteRecord` |
 | AccessKey Secret | The corresponding secret |
 | ESA Site ID | Numeric site ID from ESA Console > Sites |
 | ESA API endpoint | `esa.cn-hangzhou.aliyuncs.com` (default) or `esa.ap-southeast-1.aliyuncs.com`. If one cannot find the site, try the other. |
@@ -221,9 +221,12 @@ Once packaged as a proper FreeBSD `.pkg`, the plugin will be installable from
 > ESA stores IPv4 and IPv6 together in one `A/AAAA` record, which must contain
 > at least one IPv4 address. MWDDNS therefore keeps a single `A/AAAA` record
 > per hostname, and cannot publish IPv6 addresses while no IPv4 address is
-> available. A hostname equal to the site name is written as `@`. Rules saved
-> before the proxy setting existed keep the record's console settings until
-> the rule is saved again.
+> available. A hostname equal to the site name is written as `@`.
+>
+> A rule saved before the proxy settings existed keeps the record's console
+> settings on update. MWDDNS also refuses to delete such a record when
+> re-creating it would lose its proxy acceleration or business type. Save the
+> rule once to choose these settings explicitly.
 
 ### PowerDNS
 
