@@ -215,11 +215,15 @@ Once packaged as a proper FreeBSD `.pkg`, the plugin will be installable from
 | AccessKey Secret | The corresponding secret |
 | ESA Site ID | Numeric site ID from ESA Console > Sites |
 | ESA API endpoint | `esa.cn-hangzhou.aliyuncs.com` (default) or `esa.ap-southeast-1.aliyuncs.com`. If one cannot find the site, try the other. |
+| ESA proxy acceleration | Serve the hostname through ESA. Required for sites using CNAME access. MWDDNS applies it on every create and update |
+| ESA business type | `web`, `api` or `image_video`, used when proxy acceleration is on |
 
 > ESA stores IPv4 and IPv6 together in one `A/AAAA` record, which must contain
 > at least one IPv4 address. MWDDNS therefore keeps a single `A/AAAA` record
 > per hostname, and cannot publish IPv6 addresses while no IPv4 address is
-> available.
+> available. A hostname equal to the site name is written as `@`. Rules saved
+> before the proxy setting existed keep the record's console settings until
+> the rule is saved again.
 
 ### PowerDNS
 
@@ -242,10 +246,11 @@ Used on both the portal page and the dashboard widget.
 | Red | The interface IP is **not** yet in DNS: update pending or failed |
 
 **Proxy-mode matching.** When a provider configuration intentionally hides
-origin IPs behind a proxy or CDN (for example Cloudflare orange-cloud mode),
-recursive DNS answers return edge proxy IPs rather than your origin A/AAAA
-values. In those modes MWDDNS matches status against the provider's API record
-list, when available, to avoid false "out of sync" indicators.
+origin IPs behind a proxy or CDN, such as Cloudflare orange-cloud mode or ESA
+proxy acceleration, recursive DNS answers return edge proxy IPs rather than
+your origin A/AAAA values. In those modes MWDDNS matches status against the
+provider's API record list, when available, to avoid false "out of sync"
+indicators.
 
 ---
 

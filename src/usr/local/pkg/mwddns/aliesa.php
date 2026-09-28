@@ -15,10 +15,16 @@
  * comma-separated address list and must contain at least one IPv4 address,
  * so MWDDNS maintains a single A/AAAA record per hostname.
  *
+ * Each sync reads the site with GetSite. Its name decides when the hostname is
+ * the site apex, which ESA writes as "@". Its access type decides whether a
+ * record may be DNS-only: sites using CNAME access require proxy acceleration.
+ *
  * Provider contract:
  *   mwddns_aliesa_fields()
  *   mwddns_aliesa_validate()
  *   mwddns_aliesa_update()
+ *   mwddns_aliesa_should_use_api_match()   status matching for proxied records
+ *   mwddns_aliesa_list_records()
  */
 
 define('MWDDNS_ESA_API_VERSION',    '2024-09-10');
@@ -33,6 +39,16 @@ function mwddns_aliesa_endpoints(): array
     return [
         'cn-hangzhou'    => 'esa.cn-hangzhou.aliyuncs.com',
         'ap-southeast-1' => 'esa.ap-southeast-1.aliyuncs.com',
+    ];
+}
+
+/** BizName values ESA accepts for proxied records. */
+function mwddns_aliesa_biz_names(): array
+{
+    return [
+        'web'         => mwddns_t('Web'),
+        'api'         => mwddns_t('API'),
+        'image_video' => mwddns_t('Image and video'),
     ];
 }
 
@@ -78,6 +94,20 @@ function mwddns_aliesa_fields(): array
             ],
             'help'        => mwddns_t('ESA OpenAPI endpoint. If the site cannot be found through one endpoint, try the other.'),
         ],
+        [
+            'key'    => 'esa_proxied',
+            'label'  => mwddns_t('ESA proxy acceleration'),
+            'type'   => 'checkbox',
+            'cvalue' => '1',
+            'help'   => mwddns_t('Serve the hostname through ESA acceleration. Required for sites using CNAME access; optional for NS access. MWDDNS applies this setting whenever it creates or updates the record.'),
+        ],
+        [
+            'key'     => 'esa_biz_name',
+            'label'   => mwddns_t('ESA business type'),
+            'type'    => 'select',
+            'options' => mwddns_aliesa_biz_names(),
+            'help'    => mwddns_t('Used when proxy acceleration is enabled.'),
+        ],
     ];
 }
 
@@ -96,26 +126,23 @@ function mwddns_aliesa_validate(array $post, array &$errors): bool
     if ($region !== '' && !isset(mwddns_aliesa_endpoints()[$region])) {
         $errors[] = mwddns_t('Select a valid ESA API endpoint.');
     }
+    $biz = trim($post['esa_biz_name'] ?? '');
+    if ($biz !== '' && !isset(mwddns_aliesa_biz_names()[$biz])) {
+        $errors[] = mwddns_t('Select a valid ESA business type.');
+    }
     return empty($errors);
 }
 
 function mwddns_aliesa_update(array $ipsByType, array $rule): array
 {
-    $akId   = trim($rule['access_key_id']     ?? '');
-    $akSec  = trim($rule['access_key_secret'] ?? '');
-    $siteId = trim($rule['esa_site_id']       ?? '');
-    $host   = rtrim(strtolower(trim($rule['hostname'] ?? '')), '.');
-    $ttl    = max(1, (int)($rule['ttl'] ?? 300));
-    $types  = array_keys($ipsByType);
+    $ttl   = max(1, (int)($rule['ttl'] ?? 300));
+    $types = array_keys($ipsByType);
 
-    if ($akId === '' || $akSec === '' || !preg_match('/^\d+$/', $siteId) || $host === '') {
-        return ['ok' => false, 'message' => 'Alibaba Cloud ESA credentials, site ID or hostname are missing.', 'actions' => []];
+    $api = mwddns_aliesa_api($rule);
+    if ($api === null) {
+        return ['ok' => false, 'message' => 'Alibaba Cloud ESA credentials, site ID, endpoint or hostname are missing or invalid.', 'actions' => []];
     }
-    $endpoint = mwddns_aliesa_endpoint($rule);
-    if ($endpoint === null) {
-        return ['ok' => false, 'message' => 'Alibaba Cloud ESA endpoint is not valid.', 'actions' => []];
-    }
-    $api = ['id' => $akId, 'secret' => $akSec, 'host' => $endpoint];
+    $host = $api['name'];
 
     $fail = static function (string $error, string $action = 'error') use ($types): array {
         $actions = [];
@@ -125,7 +152,21 @@ function mwddns_aliesa_update(array $ipsByType, array $rule): array
         return ['ok' => false, 'message' => $error, 'actions' => $actions];
     };
 
-    $records = mwddns_aliesa_fetch_records($api, $siteId, $host);
+    // Everything below is read before the first write, so a bad setting changes nothing.
+    $site = mwddns_aliesa_get_site($api);
+    if ($site === null) {
+        return $fail('Failed to read the site from Alibaba Cloud ESA.');
+    }
+    $apex = $host === $site['name'];
+    if (!$apex && !str_ends_with($host, '.' . $site['name'])) {
+        return $fail("Hostname {$host} is not within ESA site {$site['name']}; records left unchanged.", 'preserved');
+    }
+    $proxy = mwddns_aliesa_proxy_settings($rule, $site['access']);
+    if (is_string($proxy)) {
+        return $fail($proxy . ' Records left unchanged.', 'preserved');
+    }
+
+    $records = mwddns_aliesa_fetch_records($api, $apex);
     if ($records === null) {
         return $fail('Failed to fetch A/AAAA records from Alibaba Cloud ESA.');
     }
@@ -223,14 +264,14 @@ function mwddns_aliesa_update(array $ipsByType, array $rule): array
     $data  = json_encode(['Value' => $value], JSON_UNESCAPED_SLASHES);
 
     if (empty($records)) {
+        // ESA writes the site apex as "@"; every other name is the full hostname.
         $res = mwddns_aliesa_call($api, 'POST', 'CreateRecord', [
-            'SiteId'     => $siteId,
-            'RecordName' => $host,
+            'SiteId'     => $api['site_id'],
+            'RecordName' => $apex ? '@' : $host,
             'Type'       => MWDDNS_ESA_RECORD_TYPE,
             'Data'       => $data,
             'Ttl'        => $ttl,
-            'Proxied'    => 'false',
-        ]);
+        ] + $proxy['create']);
         $report($res['ok'], $res['error']);
         return mwddns_aliesa_result($res['ok'], $actions);
     }
@@ -243,15 +284,23 @@ function mwddns_aliesa_update(array $ipsByType, array $rule): array
         'Data'     => $data,
         'Ttl'      => $ttl,
     ];
-    // Preserve acceleration settings made in the ESA console.
-    if (is_bool($primary['Proxied'] ?? null)) {
-        $params['Proxied'] = $primary['Proxied'] ? 'true' : 'false';
-    }
-    if (is_string($primary['BizName'] ?? null) && $primary['BizName'] !== '') {
-        $params['BizName'] = $primary['BizName'];
+    if ($proxy['update'] !== null) {
+        $params += $proxy['update'];
+        $wantProxied = $proxy['update']['Proxied'] === 'true';
+        $proxySame = ($primary['Proxied'] ?? null) === $wantProxied &&
+            (!$wantProxied || ($primary['BizName'] ?? '') === $proxy['update']['BizName']);
+    } else {
+        // Legacy rule without the setting: keep what is configured in the ESA console.
+        if (is_bool($primary['Proxied'] ?? null)) {
+            $params['Proxied'] = $primary['Proxied'] ? 'true' : 'false';
+        }
+        if (is_string($primary['BizName'] ?? null) && $primary['BizName'] !== '') {
+            $params['BizName'] = $primary['BizName'];
+        }
+        $proxySame = true;
     }
     $current = mwddns_aliesa_split_value($primary['Data']['Value'] ?? null) ?? [];
-    $same = empty($records) && (int)($primary['Ttl'] ?? 0) === $ttl &&
+    $same = empty($records) && $proxySame && (int)($primary['Ttl'] ?? 0) === $ttl &&
         mwddns_aliesa_same_set($current, explode(',', $value));
     $res = $same ? ['ok' => true, 'error' => ''] : mwddns_aliesa_call($api, 'POST', 'UpdateRecord', $params);
     if (!$res['ok']) {
@@ -290,6 +339,61 @@ function mwddns_aliesa_endpoint(array $rule): ?string
 {
     $region = trim($rule['esa_region'] ?? '');
     return mwddns_aliesa_endpoints()[$region === '' ? MWDDNS_ESA_DEFAULT_REGION : $region] ?? null;
+}
+
+/** Credentials, endpoint, site ID and hostname for a rule, or null if any is missing or invalid. */
+function mwddns_aliesa_api(array $rule): ?array
+{
+    $akId     = trim($rule['access_key_id']     ?? '');
+    $akSec    = trim($rule['access_key_secret'] ?? '');
+    $siteId   = trim($rule['esa_site_id']       ?? '');
+    $host     = rtrim(strtolower(trim($rule['hostname'] ?? '')), '.');
+    $endpoint = mwddns_aliesa_endpoint($rule);
+    if ($akId === '' || $akSec === '' || !preg_match('/^\d+$/', $siteId) || $host === '' || $endpoint === null) {
+        return null;
+    }
+    return ['id' => $akId, 'secret' => $akSec, 'host' => $endpoint, 'site_id' => $siteId, 'name' => $host];
+}
+
+/** The site's normalised name and access type (NS or CNAME), or null on error. */
+function mwddns_aliesa_get_site(array $api): ?array
+{
+    $res   = mwddns_aliesa_call($api, 'GET', 'GetSite', ['SiteId' => $api['site_id']]);
+    $model = $res['ok'] ? ($res['data']['SiteModel'] ?? null) : null;
+    $name  = is_array($model) ? rtrim(strtolower(trim((string)($model['SiteName'] ?? ''))), '.') : '';
+    if ($name === '') {
+        return null;
+    }
+    return ['name' => $name, 'access' => strtoupper(trim((string)($model['AccessType'] ?? '')))];
+}
+
+/**
+ * Proxy parameters for CreateRecord and UpdateRecord.
+ * 'update' is null for a rule saved before the setting existed: its record
+ * keeps the settings made in the ESA console. Returns an error string when
+ * the rule asks for something the site cannot do.
+ */
+function mwddns_aliesa_proxy_settings(array $rule, string $access)
+{
+    $cname = $access === 'CNAME';
+    $flag  = (string)($rule['esa_proxied'] ?? '');
+    $biz   = trim((string)($rule['esa_biz_name'] ?? ''));
+    $biz   = $biz === '' ? 'web' : $biz;
+    if (!array_key_exists($biz, mwddns_aliesa_biz_names())) {
+        return 'ESA business type is not valid.';
+    }
+    $on  = ['Proxied' => 'true', 'BizName' => $biz];
+    $off = ['Proxied' => 'false'];
+    if ($flag === '1') {
+        return ['create' => $on, 'update' => $on];
+    }
+    if ($flag === '0') {
+        if ($cname) {
+            return 'This ESA site uses CNAME access, which requires proxy acceleration. Enable ESA proxy acceleration in the rule.';
+        }
+        return ['create' => $off, 'update' => $off];
+    }
+    return ['create' => $cname ? $on : $off, 'update' => null];
 }
 
 /** 'A' for IPv4, 'AAAA' for IPv6. Callers pass validated addresses only. */
@@ -338,46 +442,98 @@ function mwddns_aliesa_same_set(array $a, array $b): bool
 }
 
 /**
- * List every A/AAAA record whose name is exactly $host.
- * Returns the records, or null if any page fails or the listing is incomplete.
+ * List every A/AAAA record for the rule's hostname.
+ * The site apex is looked up both as "@" and by its full name, because
+ * requests use "@" while a listing may report either form.
+ * Returns the records, or null if any page fails or a listing is incomplete.
  */
-function mwddns_aliesa_fetch_records(array $api, string $siteId, string $host): ?array
+function mwddns_aliesa_fetch_records(array $api, bool $apex): ?array
 {
-    $records = [];
-    $seen    = 0;
-    for ($page = 1; $page <= MWDDNS_ESA_MAX_PAGES; $page++) {
-        $res = mwddns_aliesa_call($api, 'GET', 'ListRecords', [
-            'SiteId'          => $siteId,
-            'RecordName'      => $host,
-            'RecordMatchType' => 'exact',
-            'PageNumber'      => $page,
-            'PageSize'        => MWDDNS_ESA_PAGE_SIZE,
-        ]);
-        if (!$res['ok']) {
-            return null;
-        }
-        $batch = $res['data']['Records'] ?? [];
-        $total = $res['data']['TotalCount'] ?? null;
-        if (!is_array($batch) || !is_numeric($total)) {
-            return null;
-        }
-        $seen += count($batch);
-        foreach ($batch as $rec) {
-            // Other record types share the name; only A/AAAA records are managed here.
-            if (is_array($rec) &&
-                strcasecmp((string)($rec['RecordType'] ?? ''), MWDDNS_ESA_RECORD_TYPE) === 0 &&
-                strcasecmp(rtrim((string)($rec['RecordName'] ?? ''), '.'), $host) === 0) {
-                $records[] = $rec;
+    $host = $api['name'];
+    $byId = [];
+    foreach ($apex ? ['@', $host] : [$host] as $name) {
+        $seen = 0;
+        for ($page = 1; ; $page++) {
+            if ($page > MWDDNS_ESA_MAX_PAGES) {
+                return null;  // Page limit reached before the end of the listing.
+            }
+            $res = mwddns_aliesa_call($api, 'GET', 'ListRecords', [
+                'SiteId'          => $api['site_id'],
+                'RecordName'      => $name,
+                'RecordMatchType' => 'exact',
+                'PageNumber'      => $page,
+                'PageSize'        => MWDDNS_ESA_PAGE_SIZE,
+            ]);
+            if (!$res['ok']) {
+                return null;
+            }
+            $batch = $res['data']['Records'] ?? [];
+            $total = $res['data']['TotalCount'] ?? null;
+            if (!is_array($batch) || !is_numeric($total)) {
+                return null;
+            }
+            $seen += count($batch);
+            foreach ($batch as $rec) {
+                if (!is_array($rec) ||
+                    strcasecmp((string)($rec['RecordType'] ?? ''), MWDDNS_ESA_RECORD_TYPE) !== 0) {
+                    continue;  // Other record types share the name; only A/AAAA is managed here.
+                }
+                $recName = rtrim(strtolower(trim((string)($rec['RecordName'] ?? ''))), '.');
+                if ($recName !== $host && !($apex && $recName === '@')) {
+                    continue;
+                }
+                $id = (string)($rec['RecordId'] ?? '');
+                if ($id === '') {
+                    return null;  // A record that cannot be addressed must not be ignored.
+                }
+                $byId[$id] = $rec;
+            }
+            if ($seen >= (int)$total) {
+                break;
+            }
+            if (count($batch) === 0) {
+                return null;  // Fewer records than TotalCount: the listing is incomplete.
             }
         }
-        if ($seen >= (int)$total) {
-            return $records;
+    }
+    return array_values($byId);
+}
+
+/* =========================================================
+ * Status matching for proxied records
+ * ========================================================= */
+
+/** A proxied record resolves to ESA edge addresses, so compare with the API instead. */
+function mwddns_aliesa_should_use_api_match(array $rule): bool
+{
+    return ($rule['esa_proxied'] ?? '') === '1';
+}
+
+/** Addresses of one family held in the rule's A/AAAA record, or null on error. */
+function mwddns_aliesa_list_records(array $rule, string $type): ?array
+{
+    if (!in_array($type, ['A', 'AAAA'], true)) {
+        return null;
+    }
+    $api = mwddns_aliesa_api($rule);
+    $site = $api === null ? null : mwddns_aliesa_get_site($api);
+    $records = $site === null ? null : mwddns_aliesa_fetch_records($api, $api['name'] === $site['name']);
+    if ($records === null) {
+        return null;
+    }
+    $ips = [];
+    foreach ($records as $rec) {
+        $list = mwddns_aliesa_split_value($rec['Data']['Value'] ?? null);
+        if ($list === null) {
+            return null;
         }
-        if (count($batch) === 0) {
-            return null;  // Fewer records than TotalCount: the listing is incomplete.
+        foreach ($list as $ip) {
+            if (mwddns_aliesa_family($ip) === $type) {
+                $ips[$ip] = true;
+            }
         }
     }
-    return null;  // Page limit reached before the end of the listing.
+    return array_keys($ips);
 }
 
 /* =========================================================

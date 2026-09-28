@@ -265,6 +265,14 @@ return [
     'ESA OpenAPI endpoint. If the site cannot be found through one endpoint, try the other.'
                                                                             => 'ESA OpenAPI 端点。如果通过其中一个端点找不到站点，请改用另一个。',
     'Select a valid ESA API endpoint.'                                      => '请选择有效的 ESA API 端点。',
+    'ESA proxy acceleration'                                                => 'ESA 代理加速',
+    'Serve the hostname through ESA acceleration. Required for sites using CNAME access; optional for NS access. MWDDNS applies this setting whenever it creates or updates the record.'
+                                                                            => '通过 ESA 加速提供此主机名。使用 CNAME 接入的站点必须启用；NS 接入的站点可选。MWDDNS 每次创建或更新记录时都会套用此设置。',
+    'ESA business type'                                                     => 'ESA 业务类型',
+    'Used when proxy acceleration is enabled.'                              => '启用代理加速时使用。',
+    'Web'                                                                   => '网页',
+    'Image and video'                                                       => '图片和视频',
+    'Select a valid ESA business type.'                                     => '请选择有效的 ESA 业务类型。',
 
     /* ── powerdns.php ───────────────────────────────────────────────────── */
     'API Server URL'                                                        => 'API 服务器 URL',
