@@ -179,7 +179,7 @@ Once packaged as a proper FreeBSD `.pkg`, the plugin will be installable from
 |---|---|
 | Rule Name | Friendly label shown in the portal |
 | Hostname | FQDN to update, e.g. `home.example.com` |
-| TTL | Seconds (1 = auto, 60-86400; AliDNS minimum is 600) |
+| TTL | Seconds, 60-86400. 1 means automatic on Cloudflare and ESA; PowerDNS uses 300 instead. AliDNS minimum is 600 |
 | Interfaces | Hold Ctrl/Cmd to select multiple WAN interfaces |
 | Record Types | **A** (IPv4), **AAAA** (IPv6) or both. At least one is required. |
 

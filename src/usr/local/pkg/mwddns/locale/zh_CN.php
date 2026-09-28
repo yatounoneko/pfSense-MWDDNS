@@ -180,8 +180,8 @@ return [
     'e.g. home.example.com'                                                 => '例如：home.example.com',
     'Fully-qualified domain name (FQDN) to update.'                        => '需要更新的完全限定域名（FQDN）。',
     'TTL (seconds)'                                                         => 'TTL（秒）',
-    'Use 1 for automatic TTL. Range: 60–86400 s. Alibaba Cloud DNS minimum is 600 s.'
-                                                                            => '使用 1 表示自动 TTL。范围：60–86400 秒。阿里云 DNS 最低为 600 秒。',
+    'Use 1 for automatic TTL on Cloudflare and ESA; PowerDNS has no automatic TTL and uses 300 s instead. Range: 60–86400 s. Alibaba Cloud DNS minimum is 600 s.'
+                                                                            => 'Cloudflare 和 ESA 使用 1 表示自动 TTL；PowerDNS 没有自动 TTL，会改用 300 秒。范围：60–86400 秒。阿里云 DNS 最低为 600 秒。',
     'Hold Ctrl (Windows/Linux) or ⌘ (Mac) to select multiple interfaces. Each interface IP will be kept as a DNS record.'
                                                                             => '按住 Ctrl（Windows/Linux）或 ⌘（Mac）可多选接口。每个接口的 IP 将作为 DNS 记录保存。',
     'Record Types'                                                          => '记录类型',

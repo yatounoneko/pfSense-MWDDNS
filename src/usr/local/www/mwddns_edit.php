@@ -333,7 +333,7 @@ include('head.inc');
                            value="<?= htmlspecialchars($ttl) ?>"
                            min="1" max="86400" required>
                     <span class="help-block">
-                        <?= mwddns_t('Use 1 for automatic TTL. Range: 60–86400 s. Alibaba Cloud DNS minimum is 600 s.') ?>
+                        <?= mwddns_t('Use 1 for automatic TTL on Cloudflare and ESA; PowerDNS has no automatic TTL and uses 300 s instead. Range: 60–86400 s. Alibaba Cloud DNS minimum is 600 s.') ?>
                     </span>
                 </div>
             </div>
