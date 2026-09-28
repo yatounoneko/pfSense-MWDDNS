@@ -3,6 +3,36 @@
 Release notes and maintenance history for pfSense-MWDDNS.
 See [README.md](README.md) for installation, usage and current operational guidance.
 
+## 1.1.3 release
+
+- Require pfSense CE 2.8.0 or later. 2.9.0 is verified on hardware, 2.8.x takes
+  the same code path, and 2.7.x is no longer supported. Remove the
+  `parse_config()` fallback. `install.sh` now checks for `config_read_file()`
+  before changing any file, and also stops when pfSense cannot load its
+  configuration, even though pfSense exits with status 0 in that case.
+- Rewrite the Alibaba Cloud ESA provider for the ESA 2024-09-10 RPC API and the
+  OpenAPI V3 (ACS3-HMAC-SHA256) signature; earlier requests could not succeed.
+  Keep one A/AAAA record per hostname holding every address, as ESA requires,
+  with at least one IPv4 address. Write the site apex as `@`.
+- Add ESA rule settings for the API endpoint (Hangzhou or Singapore), proxy
+  acceleration and business type. Apply the proxy settings on every create and
+  update. Refuse DNS-only records on sites using CNAME access. Rules saved
+  before these settings keep the ESA console settings, and a deletion that
+  could not later be restored is refused until the rule is saved. The RAM
+  policy needs `esa:GetSite` and the four record actions.
+- Read every AliDNS and Cloudflare listing page before syncing, so stale records
+  beyond the first page are deleted. An incomplete listing changes nothing.
+- Update Cloudflare records with PATCH, preserving their comments, tags and
+  settings, and compare IPv6 addresses in canonical form.
+- PowerDNS has no automatic TTL, so TTL 1 now publishes 300 seconds instead of
+  one second.
+- Reorganise the README and move the Debug and pfSense compatibility references
+  to `docs/`.
+- Existing 1.1.1 and 1.1.2 installations on pfSense 2.8.0 or later can use the
+  GitHub check/download or a manual ZIP upload with Preserve data. Upgrade
+  pfSense 2.7.x to 2.8.0 or later first. After upgrading, open and save each
+  ESA rule to choose its proxy settings explicitly.
+
 ## 1.1.2 release
 
 - Store new Debug reports in private `/tmp/mwddns-debug` instead of the small
