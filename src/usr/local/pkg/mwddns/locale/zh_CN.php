@@ -259,6 +259,12 @@ return [
     'Numeric Site ID from Alibaba Cloud ESA Console → Sites → (select site) → Site ID.'
                                                                             => '在阿里云 ESA 控制台 → 站点 → （选择站点）→ 站点 ID 中查看。',
     'ESA Site ID must be a numeric value.'                                  => 'ESA 站点 ID 必须为数字。',
+    'ESA API endpoint'                                                      => 'ESA API 端点',
+    'Hangzhou'                                                              => '杭州',
+    'Singapore'                                                             => '新加坡',
+    'ESA OpenAPI endpoint. If the site cannot be found through one endpoint, try the other.'
+                                                                            => 'ESA OpenAPI 端点。如果通过其中一个端点找不到站点，请改用另一个。',
+    'Select a valid ESA API endpoint.'                                      => '请选择有效的 ESA API 端点。',
 
     /* ── powerdns.php ───────────────────────────────────────────────────── */
     'API Server URL'                                                        => 'API 服务器 URL',

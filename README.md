@@ -67,7 +67,7 @@ Traditional Chinese (`zh_HK` / `zh_TW`).
 | `cloudflare` | Cloudflare (global) | Bearer API token |
 | `alidns_intl` | Alibaba Cloud DNS, International (`ap-southeast-1`) | AccessKey + HMAC-SHA1 V1 |
 | `alidns_cn` | Alibaba Cloud DNS, China mainland | AccessKey + HMAC-SHA1 V1 |
-| `aliesa` | Alibaba Cloud ESA (Edge Security Acceleration) | AccessKey + ACS4-HMAC-SHA256 V4 |
+| `aliesa` | Alibaba Cloud ESA (Edge Security Acceleration) | AccessKey + ACS3-HMAC-SHA256 (OpenAPI V3) |
 | `powerdns` | PowerDNS Authoritative Server (self-hosted) | `X-API-Key` header |
 
 ---
@@ -214,6 +214,12 @@ Once packaged as a proper FreeBSD `.pkg`, the plugin will be installable from
 | AccessKey ID | RAM user AccessKey ID with ESA DNS permissions |
 | AccessKey Secret | The corresponding secret |
 | ESA Site ID | Numeric site ID from ESA Console > Sites |
+| ESA API endpoint | `esa.cn-hangzhou.aliyuncs.com` (default) or `esa.ap-southeast-1.aliyuncs.com`. If one cannot find the site, try the other. |
+
+> ESA stores IPv4 and IPv6 together in one `A/AAAA` record, which must contain
+> at least one IPv4 address. MWDDNS therefore keeps a single `A/AAAA` record
+> per hostname, and cannot publish IPv6 addresses while no IPv4 address is
+> available.
 
 ### PowerDNS
 
