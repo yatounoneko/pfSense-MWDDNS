@@ -8,7 +8,7 @@ same hostname at once. MWDDNS solves that: each rule watches as many WAN
 interfaces as you like and maintains one record per interface address. It runs
 independently of the built-in DDNS service.
 
-Current version: **1.1.2** &nbsp;•&nbsp; License: **Apache-2.0** &nbsp;•&nbsp;
+Current version: **1.1.3** &nbsp;•&nbsp; License: **Apache-2.0** &nbsp;•&nbsp;
 [Changelog](CHANGELOG.md)
 
 **Dashboard widget**
@@ -67,14 +67,14 @@ Traditional Chinese (`zh_HK` / `zh_TW`).
 | `cloudflare` | Cloudflare (global) | Bearer API token |
 | `alidns_intl` | Alibaba Cloud DNS, International (`ap-southeast-1`) | AccessKey + HMAC-SHA1 V1 |
 | `alidns_cn` | Alibaba Cloud DNS, China mainland | AccessKey + HMAC-SHA1 V1 |
-| `aliesa` | Alibaba Cloud ESA (Edge Security Acceleration) | AccessKey + ACS4-HMAC-SHA256 V4 |
+| `aliesa` | Alibaba Cloud ESA (Edge Security Acceleration) | AccessKey + ACS3-HMAC-SHA256 (OpenAPI V3) |
 | `powerdns` | PowerDNS Authoritative Server (self-hosted) | `X-API-Key` header |
 
 ---
 
 ## Requirements
 
-- **pfSense CE 2.9.0**, see [version support](#version-support) below.
+- **pfSense CE 2.8.0 or later.** 2.9.0 is verified on hardware; see [version support](#version-support).
 - **Python 3.11**, installed as the pfSense `python311` package.
 - **Credentials for at least one supported provider:**
 
@@ -90,14 +90,14 @@ Traditional Chinese (`zh_HK` / `zh_TW`).
 | pfSense CE | Status |
 |---|---|
 | **2.9.0** | **Verified on hardware.** Current baseline. |
-| 2.8.x | Not device-tested. Takes the same primary code path as 2.9.0, so it is expected to work. |
-| 2.7.x | Not device-tested. Relies on the legacy configuration-API fallback. |
+| 2.8.x | Not device-tested. Takes the same code path as 2.9.0, so it is expected to work. |
+| 2.7.x and earlier | **Not supported.** The installer refuses to run and changes nothing. |
 
 For this plugin 2.9.0 is a removal, not an addition: it deleted the legacy
-`parse_config()` configuration reader and added nothing MWDDNS needs. The plugin
-prefers `config_read_file()`, which has existed since 2.8.0, and falls back to
-`parse_config()` on 2.7.x, so 2.8.x and 2.9.x run the same primary path. Full
-analysis: [docs/pfsense-compatibility.md](docs/pfsense-compatibility.md).
+`parse_config()` configuration reader and added nothing MWDDNS needs. MWDDNS
+uses `config_read_file()`, which has existed since 2.8.0, so 2.8.x and 2.9.x run
+the same code path. Full analysis, including what to do with an existing 2.7.x
+installation: [docs/pfsense-compatibility.md](docs/pfsense-compatibility.md).
 
 ---
 
@@ -179,7 +179,7 @@ Once packaged as a proper FreeBSD `.pkg`, the plugin will be installable from
 |---|---|
 | Rule Name | Friendly label shown in the portal |
 | Hostname | FQDN to update, e.g. `home.example.com` |
-| TTL | Seconds (1 = auto, 60-86400; AliDNS minimum is 600) |
+| TTL | Seconds, 60-86400. 1 means automatic on Cloudflare and ESA; PowerDNS uses 300 instead. AliDNS minimum is 600 |
 | Interfaces | Hold Ctrl/Cmd to select multiple WAN interfaces |
 | Record Types | **A** (IPv4), **AAAA** (IPv6) or both. At least one is required. |
 
@@ -211,9 +211,22 @@ Once packaged as a proper FreeBSD `.pkg`, the plugin will be installable from
 
 | Field | Description |
 |---|---|
-| AccessKey ID | RAM user AccessKey ID with ESA DNS permissions |
+| AccessKey ID | RAM user AccessKey ID allowed `esa:GetSite`, `esa:ListRecords`, `esa:CreateRecord`, `esa:UpdateRecord` and `esa:DeleteRecord` |
 | AccessKey Secret | The corresponding secret |
 | ESA Site ID | Numeric site ID from ESA Console > Sites |
+| ESA API endpoint | `esa.cn-hangzhou.aliyuncs.com` (default) or `esa.ap-southeast-1.aliyuncs.com`. If one cannot find the site, try the other. |
+| ESA proxy acceleration | Serve the hostname through ESA. Required for sites using CNAME access. MWDDNS applies it on every create and update |
+| ESA business type | `web`, `api` or `image_video`, used when proxy acceleration is on |
+
+> ESA stores IPv4 and IPv6 together in one `A/AAAA` record, which must contain
+> at least one IPv4 address. MWDDNS therefore keeps a single `A/AAAA` record
+> per hostname, and cannot publish IPv6 addresses while no IPv4 address is
+> available. A hostname equal to the site name is written as `@`.
+>
+> A rule saved before the proxy settings existed keeps the record's console
+> settings on update. MWDDNS also refuses to delete such a record when
+> re-creating it would lose its proxy acceleration or business type. Save the
+> rule once to choose these settings explicitly.
 
 ### PowerDNS
 
@@ -236,10 +249,11 @@ Used on both the portal page and the dashboard widget.
 | Red | The interface IP is **not** yet in DNS: update pending or failed |
 
 **Proxy-mode matching.** When a provider configuration intentionally hides
-origin IPs behind a proxy or CDN (for example Cloudflare orange-cloud mode),
-recursive DNS answers return edge proxy IPs rather than your origin A/AAAA
-values. In those modes MWDDNS matches status against the provider's API record
-list, when available, to avoid false "out of sync" indicators.
+origin IPs behind a proxy or CDN, such as Cloudflare orange-cloud mode or ESA
+proxy acceleration, recursive DNS answers return edge proxy IPs rather than
+your origin A/AAAA values. In those modes MWDDNS matches status against the
+provider's API record list, when available, to avoid false "out of sync"
+indicators.
 
 ---
 

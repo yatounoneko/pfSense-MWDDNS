@@ -186,8 +186,8 @@ return [
     'e.g. home.example.com'                                                 => '例如：home.example.com',
     'Fully-qualified domain name (FQDN) to update.'                        => '需要更新的完整網域名稱（FQDN）。',
     'TTL (seconds)'                                                         => 'TTL（秒）',
-    'Use 1 for automatic TTL. Range: 60–86400 s. Alibaba Cloud DNS minimum is 600 s.'
-                                                                            => '使用 1 表示自動 TTL。範圍：60–86400 秒。阿里雲 DNS 最低為 600 秒。',
+    'Use 1 for automatic TTL on Cloudflare and ESA; PowerDNS has no automatic TTL and uses 300 s instead. Range: 60–86400 s. Alibaba Cloud DNS minimum is 600 s.'
+                                                                            => 'Cloudflare 及 ESA 使用 1 表示自動 TTL；PowerDNS 沒有自動 TTL，會改用 300 秒。範圍：60–86400 秒。阿里雲 DNS 最低為 600 秒。',
     'Hold Ctrl (Windows/Linux) or ⌘ (Mac) to select multiple interfaces. Each interface IP will be kept as a DNS record.'
                                                                             => '按住 Ctrl（Windows/Linux）或 ⌘（Mac）可多選介面。每個介面的 IP 將作為 DNS 記錄儲存。',
     'Record Types'                                                          => '記錄類型',
@@ -257,14 +257,28 @@ return [
     'Root Domain must be a valid domain name (e.g. example.com).'          => '根網域必須是有效的網域名稱（例如：example.com）。',
 
     /* ── aliesa.php ─────────────────────────────────────────────────────── */
-    'Found in Alibaba Cloud Console → AccessKey Management. Use a RAM sub-account with ESA DNS permissions only.'
-                                                                            => '在阿里雲控制台 → AccessKey 管理中查看。建議使用僅具有 ESA DNS 權限的 RAM 子帳號。',
+    'Found in Alibaba Cloud Console → AccessKey Management. Use a RAM sub-account allowed only esa:GetSite, esa:ListRecords, esa:CreateRecord, esa:UpdateRecord and esa:DeleteRecord.'
+                                                                            => '在阿里雲控制台 → AccessKey 管理中查看。建議使用僅允許 esa:GetSite、esa:ListRecords、esa:CreateRecord、esa:UpdateRecord 及 esa:DeleteRecord 的 RAM 子帳號。',
     'Keep secret. Stored in plain text in pfSense config.xml.'             => '請妥善保管。以明文形式儲存於 pfSense config.xml 中。',
     'ESA Site ID'                                                           => 'ESA 站點 ID',
     'e.g. 123456789'                                                        => '例如：123456789',
     'Numeric Site ID from Alibaba Cloud ESA Console → Sites → (select site) → Site ID.'
                                                                             => '在阿里雲 ESA 控制台 → 站點 → （選擇站點）→ 站點 ID 中查看。',
     'ESA Site ID must be a numeric value.'                                  => 'ESA 站點 ID 必須為數字。',
+    'ESA API endpoint'                                                      => 'ESA API 端點',
+    'Hangzhou'                                                              => '杭州',
+    'Singapore'                                                             => '新加坡',
+    'ESA OpenAPI endpoint. If the site cannot be found through one endpoint, try the other.'
+                                                                            => 'ESA OpenAPI 端點。如果透過其中一個端點找不到站點，請改用另一個。',
+    'Select a valid ESA API endpoint.'                                      => '請選擇有效的 ESA API 端點。',
+    'ESA proxy acceleration'                                                => 'ESA 代理加速',
+    'Serve the hostname through ESA acceleration. Required for sites using CNAME access; optional for NS access. MWDDNS applies this setting whenever it creates or updates the record.'
+                                                                            => '透過 ESA 加速提供此主機名稱。使用 CNAME 接入的站點必須啟用；NS 接入的站點可選擇。MWDDNS 每次建立或更新記錄時都會套用此設定。',
+    'ESA business type'                                                     => 'ESA 業務類型',
+    'Used when proxy acceleration is enabled.'                              => '啟用代理加速時使用。',
+    'Web'                                                                   => '網頁',
+    'Image and video'                                                       => '圖片及影片',
+    'Select a valid ESA business type.'                                     => '請選擇有效的 ESA 業務類型。',
 
     /* ── powerdns.php ───────────────────────────────────────────────────── */
     'API Server URL'                                                        => 'API 伺服器 URL',

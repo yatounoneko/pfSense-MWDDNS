@@ -146,7 +146,10 @@ function mwddns_powerdns_update(array $ipsByType, array $rule): array
     $serverId = trim($rule['pdns_server_id'] ?? '') ?: 'localhost';
     $zone     = trim($rule['pdns_zone']      ?? '');
     $hostname = trim($rule['hostname']       ?? '');
-    $ttl      = max(1, (int)($rule['ttl']    ?? 300));
+    // PowerDNS TTLs are plain seconds with no automatic value, so the GUI's
+    // "1 = automatic" would publish a one-second TTL. Use 300 s instead.
+    $ttl      = (int)($rule['ttl']    ?? 300);
+    $ttl      = $ttl <= 1 ? 300 : $ttl;
 
     if ($baseUrl === '' || $apiKey === '' || $zone === '') {
         return ['ok' => false, 'message' => 'PowerDNS URL, API key, or zone is missing.', 'actions' => []];

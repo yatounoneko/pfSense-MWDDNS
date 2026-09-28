@@ -3,6 +3,46 @@
 Release notes and maintenance history for pfSense-MWDDNS.
 See [README.md](README.md) for installation, usage and current operational guidance.
 
+## 1.1.3 release
+
+- Require pfSense CE 2.8.0 or later; 2.7.x is no longer supported. 2.9.0
+  remains the platform baseline verified on hardware with earlier releases,
+  and 2.8.x support rests on source-level analysis.
+- Remove the `parse_config()` fallback. `install.sh` checks for
+  `config_read_file()` before copying or removing plugin files. It also rejects
+  a configuration load that ends before the success marker is printed,
+  including early exits with status 0.
+- Rewrite the Alibaba Cloud ESA provider for the ESA 2024-09-10 RPC API and the
+  OpenAPI V3 (ACS3-HMAC-SHA256) signature; earlier requests could not succeed.
+  Keep one A/AAAA record per hostname holding every address, as ESA requires,
+  with at least one IPv4 address. Write the site apex as `@`.
+- Add ESA rule settings for the API endpoint (Hangzhou or Singapore), proxy
+  acceleration and business type. Apply the proxy settings on every create and
+  update. Refuse DNS-only records on sites using CNAME access. Rules saved
+  before these settings keep the ESA console settings, and a deletion that
+  could not later be restored is refused until the rule is saved. The RAM
+  policy needs `esa:GetSite` and the four record actions.
+- Check ESA status through the API for proxied rules and for rules saved before
+  the proxy setting existed, so origin addresses are not compared with ESA edge
+  addresses.
+- Read every AliDNS and Cloudflare listing page before syncing each address
+  family, so stale records beyond the first page are deleted. An incomplete
+  listing skips changes for that family; other families may still be updated.
+- Update Cloudflare records with PATCH, preserving their comments, tags and
+  settings, and compare IPv6 addresses in canonical form.
+- PowerDNS has no automatic TTL, so TTL 1 now publishes 300 seconds instead of
+  one second.
+- Reorganise the README and move the Debug and pfSense compatibility references
+  to `docs/`.
+- Existing 1.1.1 and 1.1.2 installations on pfSense 2.8.0 or later can upgrade
+  with Preserve data: through the GitHub check/download once the 1.1.3 release
+  ZIP is published, or by manual ZIP upload. Upgrade pfSense 2.7.x to 2.8.0 or
+  later first. After upgrading, open and save each ESA rule to choose its proxy
+  settings explicitly.
+- The 1.1.3 changes were checked offline against stubbed pfSense functions and
+  mock provider APIs. They have not yet been tested on a real firewall or
+  against live provider accounts.
+
 ## 1.1.2 release
 
 - Store new Debug reports in private `/tmp/mwddns-debug` instead of the small

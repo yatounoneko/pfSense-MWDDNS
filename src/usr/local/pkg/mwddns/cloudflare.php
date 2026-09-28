@@ -11,6 +11,8 @@
  */
 
 define('MWDDNS_CF_API', 'https://api.cloudflare.com/client/v4');
+define('MWDDNS_CF_PAGE_SIZE', 100);  // Cloudflare's default page size
+define('MWDDNS_CF_MAX_PAGES', 50);
 
 /* =========================================================
  * Provider contract
@@ -105,18 +107,21 @@ function mwddns_cloudflare_update(array $ipsByType, array $rule): array
             continue;
         }
 
+        // Keyed by canonical address, so "2001:DB8::1" matches "2001:db8::1".
         $cfMap = [];
         foreach ($cfRecords as $rec) {
-            $cfMap[$rec['content']] = $rec['id'];
+            $content = (string)($rec['content'] ?? '');
+            $cfMap[mwddns_cf_ip_key($content)] = ['id' => $rec['id'], 'ip' => $content];
         }
 
         $upsertsOK = true;
         $res = ['ok' => true, 'error' => ''];
         foreach (array_keys($currentIPs) as $ip) {
-            if (isset($cfMap[$ip])) {
-                $res = mwddns_cf_update_record($token, $zone_id, $cfMap[$ip], $host, $type, $ip, $ttl, $proxied);
+            $key = mwddns_cf_ip_key((string)$ip);
+            if (isset($cfMap[$key])) {
+                $res = mwddns_cf_update_record($token, $zone_id, $cfMap[$key]['id'], $ip, $ttl, $proxied);
                 $actions[] = ['action' => 'updated', 'ip' => $ip, 'type' => $type, 'ok' => $res['ok'], 'error' => $res['error']];
-                unset($cfMap[$ip]);
+                unset($cfMap[$key]);
             } else {
                 $res = mwddns_cf_create_record($token, $zone_id, $host, $type, $ip, $ttl, $proxied);
                 $actions[] = ['action' => 'created', 'ip' => $ip, 'type' => $type, 'ok' => $res['ok'], 'error' => $res['error']];
@@ -133,9 +138,9 @@ function mwddns_cloudflare_update(array $ipsByType, array $rule): array
             continue;
         }
 
-        foreach ($cfMap as $oldIP => $recordId) {
-            $res = mwddns_cf_delete_record($token, $zone_id, $recordId);
-            $actions[] = ['action' => 'deleted', 'ip' => $oldIP, 'type' => $type, 'ok' => $res['ok'], 'error' => $res['error']];
+        foreach ($cfMap as $old) {
+            $res = mwddns_cf_delete_record($token, $zone_id, $old['id']);
+            $actions[] = ['action' => 'deleted', 'ip' => $old['ip'], 'type' => $type, 'ok' => $res['ok'], 'error' => $res['error']];
             if (!$res['ok']) {
                 $anyError = true;
             }
@@ -245,13 +250,43 @@ function mwddns_cf_request(string $method, string $url, string $token, ?array $b
     ];
 }
 
-/** List all A or AAAA records for $hostname in $zone_id. Returns null on error. */
+/**
+ * List all A or AAAA records for $hostname in $zone_id.
+ * Reads every page reported by result_info, so no stale record escapes
+ * deletion. Returns null if any page fails or the listing is incomplete.
+ */
 function mwddns_cf_list_records(string $token, string $zone_id, string $hostname, string $type = 'A'): ?array
 {
-    $url = MWDDNS_CF_API . '/zones/' . rawurlencode($zone_id) . '/dns_records?' .
-           http_build_query(['name' => $hostname, 'type' => $type]);
-    $res = mwddns_cf_request('GET', $url, $token);
-    return $res['ok'] ? ($res['data']['result'] ?? []) : null;
+    $records = [];
+    for ($page = 1; $page <= MWDDNS_CF_MAX_PAGES; $page++) {
+        $url = MWDDNS_CF_API . '/zones/' . rawurlencode($zone_id) . '/dns_records?' .
+               http_build_query(['name' => $hostname, 'type' => $type,
+                                 'page' => $page, 'per_page' => MWDDNS_CF_PAGE_SIZE]);
+        $res = mwddns_cf_request('GET', $url, $token);
+        if (!$res['ok']) {
+            return null;
+        }
+        $batch = $res['data']['result'] ?? [];
+        if (!is_array($batch)) {
+            return null;
+        }
+        $records = array_merge($records, $batch);
+        $pages = $res['data']['result_info']['total_pages'] ?? null;
+        if (is_numeric($pages) ? $page >= (int)$pages : count($batch) < MWDDNS_CF_PAGE_SIZE) {
+            return $records;
+        }
+        if (count($batch) === 0) {
+            return null;  // total_pages promised more results than were returned.
+        }
+    }
+    return null;  // Page limit reached before the end of the listing.
+}
+
+/** Comparison key for an address: its canonical form, or the text as given. */
+function mwddns_cf_ip_key(string $ip): string
+{
+    $packed = @inet_pton($ip);
+    return $packed === false ? $ip : inet_ntop($packed);
 }
 
 /** Create a new Cloudflare A or AAAA record. */
@@ -269,16 +304,18 @@ function mwddns_cf_create_record(
     ]);
 }
 
-/** Update an existing Cloudflare A or AAAA record (full replace via PUT). */
+/**
+ * Update an existing Cloudflare A or AAAA record.
+ * PATCH changes only the fields sent. PUT would overwrite the record and reset
+ * everything omitted, such as its comment, tags and settings.
+ */
 function mwddns_cf_update_record(
     string $token, string $zone_id, string $record_id,
-    string $hostname, string $type, string $ip, int $ttl, bool $proxied
+    string $ip, int $ttl, bool $proxied
 ): array {
     $url = MWDDNS_CF_API . '/zones/' . rawurlencode($zone_id) .
            '/dns_records/' . rawurlencode($record_id);
-    return mwddns_cf_request('PUT', $url, $token, [
-        'type'    => $type,
-        'name'    => $hostname,
+    return mwddns_cf_request('PATCH', $url, $token, [
         'content' => $ip,
         'ttl'     => $ttl,
         'proxied' => $proxied,
