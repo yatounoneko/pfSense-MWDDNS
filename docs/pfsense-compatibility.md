@@ -66,4 +66,4 @@ versions are probed with `function_exists()` before use.
 
 - Only 2.9.0 has been exercised on a real firewall. The 2.8.x row rests on source-level analysis, not on testing.
 - A matching function name is not proof of unchanged behaviour. A signature or semantic change inside a function that still exists would not be caught by the check above.
-- 2.9.0 also moves to PHP 8.5.7 and migrates `config.xml` entity encoding from `ENT_HTML401` to `ENT_XML1`. MWDDNS never parses `config.xml` itself; it reads and writes only through the pfSense configuration API.
+- 2.9.0 also moves to PHP 8.5.7 and migrates `config.xml` entity encoding from `ENT_HTML401` to `ENT_XML1`. The PHP code reads and writes the configuration only through the pfSense configuration API. The one exception is the gateway watcher, which reads gateway names and latency/loss thresholds directly from `/conf/config.xml`. It never writes the file, and its standard XML parser decodes either entity style.
