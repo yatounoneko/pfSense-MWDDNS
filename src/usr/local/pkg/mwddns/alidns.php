@@ -19,6 +19,8 @@
  */
 
 define('MWDDNS_ALIDNS_API_VERSION', '2015-01-09');
+define('MWDDNS_ALIDNS_PAGE_SIZE',   500);  // DescribeDomainRecords maximum
+define('MWDDNS_ALIDNS_MAX_PAGES',   20);   // 10,000 keyword matches
 // Endpoint map keyed by provider key
 define('MWDDNS_ALIDNS_ENDPOINTS', serialize([
     'alidns_intl' => 'https://alidns.ap-southeast-1.aliyuncs.com',
@@ -314,30 +316,59 @@ function mwddns_alidns_call(
 /**
  * List A or AAAA records for a given RR under a domain.
  * Returns array of record objects, or null on error.
+ *
+ * RRKeyWord is a fuzzy match, so other names containing the RR (www0, www1, ...)
+ * share the result set. Read every page before filtering: a partial list would
+ * hide stale records from deletion. An incomplete read returns null.
  */
 function mwddns_alidns_list_records(
     string $akId, string $akSec, string $endpoint,
     string $domain, string $rr, string $type = 'A'
 ): ?array {
-    $res = mwddns_alidns_call($akId, $akSec, $endpoint, 'DescribeDomainRecords', [
-        'DomainName'  => $domain,
-        'RRKeyWord'   => $rr,
-        'TypeKeyWord' => $type,
-        'PageSize'    => 500,
-    ]);
+    $matches = [];
+    $seen    = 0;
+    for ($page = 1; $page <= MWDDNS_ALIDNS_MAX_PAGES; $page++) {
+        $res = mwddns_alidns_call($akId, $akSec, $endpoint, 'DescribeDomainRecords', [
+            'DomainName'  => $domain,
+            'RRKeyWord'   => $rr,
+            'TypeKeyWord' => $type,
+            'PageNumber'  => $page,
+            'PageSize'    => MWDDNS_ALIDNS_PAGE_SIZE,
+        ]);
+        if (!$res['ok']) {
+            return null;
+        }
 
-    if (!$res['ok']) {
-        return null;
+        // AliDNS collapses a single record into an object, not an array
+        $raw = $res['data']['DomainRecords']['Record'] ?? [];
+        if (!is_array($raw)) {
+            return null;
+        }
+        if (isset($raw['RecordId'])) {
+            $raw = [$raw];
+        }
+        $seen += count($raw);
+
+        // Keep only exact RR + type matches (keyword search returns partial matches)
+        foreach ($raw as $r) {
+            if (is_array($r) && ($r['RR'] ?? null) === $rr && ($r['Type'] ?? null) === $type) {
+                $matches[] = $r;
+            }
+        }
+
+        $total = $res['data']['TotalCount'] ?? null;
+        if (is_numeric($total)) {
+            if ($seen >= (int)$total) {
+                return $matches;
+            }
+            if (count($raw) === 0) {
+                return null;  // Fewer records than TotalCount: the listing is incomplete.
+            }
+        } elseif (count($raw) < MWDDNS_ALIDNS_PAGE_SIZE) {
+            return $matches;  // No TotalCount: a short page is the last page.
+        }
     }
-
-    // AliDNS collapses a single record into an object, not an array
-    $raw = $res['data']['DomainRecords']['Record'] ?? [];
-    if (isset($raw['RecordId'])) {
-        $raw = [$raw];
-    }
-
-    // Filter to only exact RR + type matches (keyword search may return partial matches)
-    return array_values(array_filter($raw, static fn($r) => $r['RR'] === $rr && $r['Type'] === $type));
+    return null;  // Page limit reached before the end of the listing.
 }
 
 /** Add a new A or AAAA record. */
