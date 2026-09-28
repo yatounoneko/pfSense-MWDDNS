@@ -75,27 +75,40 @@ EOF
 # ---------------------------------------------------------------------------
 # require_supported_pfsense: stop before touching anything on pfSense < 2.8.0.
 #   config_read_file() exists from pfSense CE 2.8.0; 2.7.x is not supported.
+#   Loading config.inc also initialises the configuration, and pfSense may
+#   die() there with exit status 0, so success requires both exit status 0 and
+#   a marker printed only after the check has run.
 #   Pass "uninstall" to print how to remove an older installation instead.
 # ---------------------------------------------------------------------------
 require_supported_pfsense() {
     _api_rc=0
-    /usr/local/bin/php -r "
+    _api_out=$(/usr/local/bin/php -r "
         require_once('/etc/inc/globals.inc');
         require_once('/etc/inc/functions.inc');
         require_once('/etc/inc/config.inc');
-        exit(function_exists('config_read_file') ? 0 : 3);
-    " >/dev/null 2>&1 || _api_rc=$?
-    if [ "${_api_rc}" -eq 3 ]; then
+        if (!function_exists('config_read_file')) {
+            echo PHP_EOL, 'MWDDNS_PREFLIGHT_UNSUPPORTED', PHP_EOL;
+            exit(3);
+        }
+        echo PHP_EOL, 'MWDDNS_PREFLIGHT_OK', PHP_EOL;
+    " 2>&1) || _api_rc=$?
+    if [ "${_api_rc}" -eq 0 ] &&
+        printf '%s\n' "${_api_out}" | grep -qx 'MWDDNS_PREFLIGHT_OK'; then
+        return 0
+    fi
+    if [ "${_api_rc}" -eq 3 ] &&
+        printf '%s\n' "${_api_out}" | grep -qx 'MWDDNS_PREFLIGHT_UNSUPPORTED'; then
         echo "ERROR: MWDDNS requires pfSense CE 2.8.0 or later. Nothing was changed." >&2
         if [ "${1:-}" = "uninstall" ]; then
             echo "To remove it from an older pfSense, run --uninstall with the install.sh" >&2
             echo "of the MWDDNS release that is installed (1.1.2 or earlier)." >&2
         fi
         exit 1
-    elif [ "${_api_rc}" -ne 0 ]; then
-        echo "ERROR: Unable to load the pfSense configuration library. Nothing was changed." >&2
-        exit 1
     fi
+    echo "ERROR: Unable to load the pfSense configuration library. Nothing was changed." >&2
+    # The last lines normally hold pfSense's own reason, such as a corrupt config.xml.
+    printf '%s\n' "${_api_out}" | grep -v '^[[:space:]]*$' | tail -n 5 | sed 's/^/    /' >&2
+    exit 1
 }
 
 # ---------------------------------------------------------------------------
