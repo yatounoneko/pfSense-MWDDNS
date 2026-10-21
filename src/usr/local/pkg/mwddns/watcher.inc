@@ -70,15 +70,23 @@ function mwddns_watcher_health(): array
     $status = 0;
     $pids = array_filter([$child, $parent]);
     if ($pids) {
+        // FreeBSD treats everything after '=' in one -o argument as a header.
+        // Give each headerless column its own -o, rather than using '=,'.
         exec('/bin/ps -ww -p ' . escapeshellarg(implode(',', $pids)) .
-            ' -o pid=,ppid=,state=,comm=,args= 2>/dev/null', $rows, $status);
+            ' -o pid= -o ppid= -o state= -o comm= -o args= 2>/dev/null', $rows, $status);
     }
     $supervisor = false;
     $worker = false;
     $workerParent = null;
+    $malformed = false;
     foreach ($rows as $row) {
         $parts = preg_split('/\s+/', trim($row), 5);
-        if (count($parts) !== 5 || strpos($parts[2], 'Z') !== false) { continue; }
+        if (count($parts) !== 5 || !preg_match('/^[1-9][0-9]*$/D', $parts[0]) ||
+            !preg_match('/^[0-9]+$/D', $parts[1])) {
+            $malformed = true;
+            continue;
+        }
+        if (strpos($parts[2], 'Z') !== false) { continue; }
         if ((int)$parts[0] === $parent && basename($parts[3]) === 'daemon') {
             $supervisor = true;
         }
@@ -101,8 +109,11 @@ function mwddns_watcher_health(): array
     }
     $state = mwddns_watcher_classify($supervisor, $worker, file_exists($base . '.stopped'),
         is_dir('/var/run/mwddns-installing'), $age, $updating);
-    // ps returns 1 for vanished PIDs; other failures mean unknown, not stopped.
-    if ($status > 1) { $state = 'unknown'; }
+    // Vanished PIDs may return 1 without rows. Invalid/unexpected output is
+    // not evidence that the service stopped, even when ps reports success.
+    if ($status > 1 || $malformed || ($pids && $status === 0 && !$rows)) {
+        $state = 'unknown';
+    }
     return ['state' => $state, 'supervisor_running' => $supervisor,
         'worker_running' => $worker, 'heartbeat_age_seconds' => $age];
 }

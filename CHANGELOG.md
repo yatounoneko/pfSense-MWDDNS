@@ -3,6 +3,14 @@
 Release notes and maintenance history for pfSense-MWDDNS.
 See [README.md](README.md) for installation, usage and current operational guidance.
 
+## 1.1.6 release
+
+- Fix Watcher health falsely reporting a running supervisor and worker as stopped on FreeBSD. Each headerless `ps` column now has a separate `-o` argument; FreeBSD treats text after `=` within one argument as the column header.
+- Report unparseable process output or an unexpectedly empty successful query as unknown rather than not running. Retain process identity, parent/child, zombie and heartbeat checks.
+- Audit the other `ps` call in the Debug collector: its comma-separated columns have no header overrides and remain valid without changes. Rules page, dashboard and Debug health continue to share the same corrected helper.
+- Add regression fixtures modelling the official FreeBSD `ps` format parser, including the original one-column failure, malformed output and service/heartbeat states. Re-run retained-data/rollback upgrades from 1.1.3, 1.1.4 and 1.1.5. Platform fixtures do not replace native pfSense/FreeBSD acceptance testing.
+- No changes to provider synchronization, rule storage, cron, Watcher startup/recovery, manual-stop protection, installation or rollback behavior.
+
 ## 1.1.5 release
 
 - Fix upgrades from 1.1.3 aborting before file installation: the old upgrade worker already stops Watcher, while the legacy service script returns failure if stopped a second time. The installer now checks status and skips only an already-stopped service; unknown status and genuine stop failures still abort before copying files.

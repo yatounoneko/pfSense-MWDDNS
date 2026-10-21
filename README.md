@@ -8,7 +8,7 @@ same hostname at once. MWDDNS solves that: each rule watches as many WAN
 interfaces as you like and maintains one record per interface address. It runs
 independently of the built-in DDNS service.
 
-Current version: **1.1.5** &nbsp;•&nbsp; License: **Apache-2.0** &nbsp;•&nbsp;
+Current version: **1.1.6** &nbsp;•&nbsp; License: **Apache-2.0** &nbsp;•&nbsp;
 [Changelog](CHANGELOG.md)
 
 **Dashboard widget**
