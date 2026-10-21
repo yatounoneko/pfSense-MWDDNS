@@ -274,4 +274,16 @@ include('head.inc');
 </div><!-- container -->
 </section><!-- page-content-main -->
 
+<script>
+events.push(function () {
+    // pfSense focuses the first visible form control before running events[].
+    // Do not leave a destructive action focused merely by opening this page.
+    // Run once; keyboard navigation and its visible focus ring remain intact.
+    var focused = document.activeElement;
+    if (focused && focused.matches('.mwddns-rule-actions .mwddns-delete-rule')) {
+        focused.blur();
+    }
+});
+</script>
+
 <?php include('foot.inc'); ?>

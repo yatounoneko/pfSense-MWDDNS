@@ -3,6 +3,13 @@
 Release notes and maintenance history for pfSense-MWDDNS.
 See [README.md](README.md) for installation, usage and current operational guidance.
 
+## 1.1.7 release
+
+- Hide routine healthy/updating Watcher banners on the rules page and dashboard widget. Keep all attention-state warnings and the full Debug health snapshot.
+- Clear the initial focus that pfSense assigns to the first rule's delete button when opening the rules page. Keep keyboard focus indicators, native button semantics, localized confirmation, POST, CSRF and revision checks.
+- Add local regression coverage for healthy/abnormal banner rendering and one-time focus cleanup, including subsequent keyboard navigation and confirmation cancellation.
+- No changes to DNS synchronization, rule data, service startup/recovery, cron, upgrade preservation or rollback behavior.
+
 ## 1.1.6 release
 
 - Fix Watcher health falsely reporting a running supervisor and worker as stopped on FreeBSD. Each headerless `ps` column now has a separate `-o` argument; FreeBSD treats text after `=` within one argument as the column header.

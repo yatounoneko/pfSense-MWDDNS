@@ -8,7 +8,7 @@ same hostname at once. MWDDNS solves that: each rule watches as many WAN
 interfaces as you like and maintains one record per interface address. It runs
 independently of the built-in DDNS service.
 
-Current version: **1.1.6** &nbsp;•&nbsp; License: **Apache-2.0** &nbsp;•&nbsp;
+Current version: **1.1.7** &nbsp;•&nbsp; License: **Apache-2.0** &nbsp;•&nbsp;
 [Changelog](CHANGELOG.md)
 
 **Dashboard widget**
@@ -470,6 +470,11 @@ The rules page, dashboard widget and Debug snapshot report watcher health
 separately from the last successful rule update. The watcher polls gateway state;
 the existing five-minute cron job remains the fallback. Viewing status never
 starts a service or changes DNS.
+
+The rules page and dashboard stay quiet while the watcher is healthy or updating
+DNS normally. Attention states still show a banner, including stopped, recovering,
+stale, unavailable heartbeat, missing supervision, maintenance and unknown status.
+Debug snapshots retain the full health state, including healthy operation.
 
 Installation creates `/usr/local/etc/rc.d/mwddns_watcher.sh` for pfSense package
 startup. A volatile once-per-boot latch avoids restarting a manually stopped

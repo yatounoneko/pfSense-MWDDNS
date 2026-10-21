@@ -121,6 +121,10 @@ function mwddns_watcher_health(): array
 function mwddns_watcher_health_html(): string
 {
     $health = mwddns_watcher_health();
+    // Keep routine healthy activity quiet; retain actionable health warnings.
+    if (in_array($health['state'], ['running', 'updating'], true)) {
+        return '';
+    }
     $labels = [
         'running' => ['success', 'Watcher is healthy'],
         'updating' => ['info', 'Watcher is updating DNS'],
