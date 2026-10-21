@@ -34,7 +34,7 @@ WWW_WIDGET="/usr/local/www/widgets/widgets/mwddns.widget.php"
 CRON_SCRIPT="/usr/local/bin/mwddns_cron.php"
 WATCHER_PY="/usr/local/bin/mwddns_gateway_watcher.py"
 WATCHER_RC="/usr/local/etc/rc.d/mwddns_watcher"
-PKG_VERSION="1.1.4"
+PKG_VERSION="1.1.5"
 MWDDNS_METADATA_DIR="/var/run/mwddns"
 
 # ---------------------------------------------------------------------------
@@ -132,7 +132,20 @@ install_files() {
     mkdir -m 0700 /var/run/mwddns-installing || exit 1
     trap 'rmdir /var/run/mwddns-installing 2>/dev/null || true' 0
     if [ -x "${WATCHER_RC}" ]; then
-        "${WATCHER_RC}" onestop
+        # The 1.1.3 upgrader already stops the legacy worker. Its rc.subr
+        # returns 1 when asked to stop it again; do not treat that state as
+        # an installation failure. Unknown status and real stop failures
+        # must still abort before any installed file is replaced.
+        _watcher_status=0
+        "${WATCHER_RC}" onestatus >/dev/null 2>&1 || _watcher_status=$?
+        case "${_watcher_status}" in
+            0) "${WATCHER_RC}" onestop ;;
+            1) echo "Gateway watcher already stopped; no stop required." ;;
+            *)
+                echo "ERROR: Unable to determine gateway watcher status (${_watcher_status})." >&2
+                exit 1
+                ;;
+        esac
     fi
     MWDDNS_INSTALLER_START=YES
     export MWDDNS_INSTALLER_START

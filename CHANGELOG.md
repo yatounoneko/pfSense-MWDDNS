@@ -3,6 +3,13 @@
 Release notes and maintenance history for pfSense-MWDDNS.
 See [README.md](README.md) for installation, usage and current operational guidance.
 
+## 1.1.5 release
+
+- Fix upgrades from 1.1.3 aborting before file installation: the old upgrade worker already stops Watcher, while the legacy service script returns failure if stopped a second time. The installer now checks status and skips only an already-stopped service; unknown status and genuine stop failures still abort before copying files.
+- Retain the 1.1.4 Watcher boot, recovery and health improvements, native control styling, provider behavior, configuration backups and transactional rollback.
+- Add offline regressions using the original 1.1.3 upgrade worker and legacy service script with the installer's actual pre-copy shell logic. Cover initially running/stopped services, retained configuration/runtime/Debug data, reset backups and injected installation/hash failures. The unchanged 1.1.4 ZIP is a negative control for the double-stop regression.
+- Validation uses isolated platform fixtures, not native pfSense/FreeBSD certification. Upgrades initiated by 1.1.3 retain its original start-after-install behavior; 1.1.4+ upgrade workers preserve a previously stopped service.
+
 ## 1.1.4 release
 
 - Install a pfSense-compatible `.sh` boot bridge without changing legacy ZIP
