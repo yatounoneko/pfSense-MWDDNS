@@ -4,35 +4,125 @@
 # REQUIRE: NETWORKING dpinger
 # KEYWORD: nojail
 
+# Serialize explicit start/stop/restart operations, including the boot hook.
+# Keep the lock inode; daemon -f closes the inherited descriptor.
+if [ "${1:-}" = "__locked" ]; then
+    shift
+else
+    exec /usr/bin/lockf -k -t 20 /var/run/mwddns_watcher.control.lock /bin/sh "$0" __locked "$@"
+fi
+
 . /etc/rc.subr
 
 name="mwddns_watcher"
 rcvar="${name}_enable"
-pidfile="/var/run/${name}.pid"
+pidfile="/var/run/${name}.supervisor.pid"
+child_pidfile="/var/run/${name}.pid"
+stopped_file="/var/run/${name}.stopped"
+booted_file="/var/run/${name}.booted"
 command="/usr/sbin/daemon"
 python_bin="/usr/local/bin/python3.11"
 watcher_script="/usr/local/bin/mwddns_gateway_watcher.py"
-procname="${python_bin}"
+procname="${command}"
 # Release inherited PHP/mwexec pipes; -S still sends watcher output to syslog.
-command_args="-f -S -T ${name} -p ${pidfile} ${python_bin} -u ${watcher_script}"
+command_args="-f -S -T ${name} -R 10 -P ${pidfile} -p ${child_pidfile} ${python_bin} -u ${watcher_script}"
 start_precmd="mwddns_watcher_prestart"
+start_postcmd="mwddns_watcher_poststart"
+stop_cmd="mwddns_watcher_stop"
+status_cmd="mwddns_watcher_status"
 
 mwddns_watcher_prestart()
 {
+    if [ -d /var/run/mwddns-installing ] && [ "${MWDDNS_INSTALLER_START:-}" != "YES" ]; then
+        warn "MWDDNS installation/removal is in progress"
+        return 1
+    fi
     if [ ! -x "${python_bin}" ] || [ ! -r "${watcher_script}" ]; then
         warn "MWDDNS requires ${python_bin} and ${watcher_script}"
         return 1
     fi
+    # The WebGUI upgrade worker has short-lived CPU/memory/file limits.
+    # Do not pass those limits to a permanent supervisor and its children.
+    ulimit -t unlimited || return 1
+    ulimit -v unlimited || return 1
+    ulimit -f unlimited || return 1
     # /tmp may be disk-backed. Remove only owned Debug jobs during system boot.
     # A normal restart/upgrade must preserve report history.
-    if [ -f /var/run/booting ] && [ -r /usr/local/bin/mwddns_debug.py ]; then
+    if [ "${_mwddns_boot_start:-}" = "YES" ] && [ -r /usr/local/bin/mwddns_debug.py ]; then
         "${python_bin}" -B /usr/local/bin/mwddns_debug.py --boot-clean ||
             warn "MWDDNS temporary Debug cleanup could not complete"
     fi
+    if [ -n "$(check_pidfile "${child_pidfile}" "${python_bin}")" ]; then
+        warn "MWDDNS worker already exists; stop it before starting a supervisor"
+        return 1
+    fi
+    rm -f "${stopped_file}"
     return 0
+}
+
+mwddns_watcher_poststart()
+{
+    (umask 077; : > "${booted_file}")
+}
+
+mwddns_watcher_status()
+{
+    _supervisor=$(check_pidfile "${pidfile}" "${command}")
+    _child=$(check_pidfile "${child_pidfile}" "${python_bin}")
+    if [ -n "${_supervisor}" ]; then
+        echo "${name} supervisor is running as pid ${_supervisor}; worker pid ${_child:-recovering}."
+        return 0
+    fi
+    if [ -n "${_child}" ]; then
+        echo "${name} worker is running as pid ${_child}, without a supervisor."
+        return 0
+    fi
+    echo "${name} is not running."
+    return 1
+}
+
+mwddns_watcher_stop()
+{
+    # Stop the supervisor first: killing only the worker would respawn it.
+    (umask 077; : > "${stopped_file}") || return 1
+    _supervisor=$(check_pidfile "${pidfile}" "${command}")
+    if [ -n "${_supervisor}" ]; then
+        kill -TERM "${_supervisor}" 2>/dev/null || true
+    fi
+    _count=0
+    while [ "${_count}" -lt 15 ]; do
+        _supervisor=$(check_pidfile "${pidfile}" "${command}")
+        _child=$(check_pidfile "${child_pidfile}" "${python_bin}")
+        if [ -z "${_supervisor}" ] && [ -z "${_child}" ]; then
+            rm -f "${pidfile}" "${child_pidfile}" /var/run/mwddns_watcher.health.json
+            return 0
+        fi
+        # Also stop an unsupervised worker left by a pre-1.1.4 installation.
+        if [ -z "${_supervisor}" ] && [ -n "${_child}" ]; then
+            kill -TERM "${_child}" 2>/dev/null || true
+        fi
+        sleep 1
+        _count=$((_count + 1))
+    done
+    warn "MWDDNS did not stop; refusing to continue"
+    return 1
 }
 
 load_rc_config "${name}"
 : ${mwddns_watcher_enable:="YES"}
+
+# pfSense also runs *.sh hooks after interface events. Do not undo a manual
+# stop on those events, or restart during an installation/removal.
+if [ "${1:-}" = "bootstart" ]; then
+    # rc.bootup may clear /var/run/booting before rc.start_packages runs.
+    # A volatile, once-per-boot latch works on either ordering.
+    [ ! -e "${booted_file}" ] || exit 0
+    [ ! -e "${stopped_file}" ] || exit 0
+    [ ! -d /var/run/mwddns-installing ] || exit 0
+    checkyesno "${rcvar}" || exit 0
+    mwddns_watcher_status >/dev/null 2>&1 && exit 0
+    _mwddns_boot_start=YES
+    set -- start
+fi
 
 run_rc_command "$1"

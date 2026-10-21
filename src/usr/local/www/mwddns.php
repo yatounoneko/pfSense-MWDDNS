@@ -99,6 +99,7 @@ include('head.inc');
 <?php endif; ?>
 
 <section class="col-xs-12">
+<?= mwddns_watcher_health_html() ?>
 <div class="panel panel-default">
     <div class="panel-heading">
         <h2 class="panel-title"><?= mwddns_t('Multi-WAN DDNS Rules') ?></h2>
@@ -272,5 +273,17 @@ include('head.inc');
 </div><!-- row -->
 </div><!-- container -->
 </section><!-- page-content-main -->
+
+<script>
+events.push(function () {
+    // pfSense focuses the first visible form control before running events[].
+    // Do not leave a destructive action focused merely by opening this page.
+    // Run once; keyboard navigation and its visible focus ring remain intact.
+    var focused = document.activeElement;
+    if (focused && focused.matches('.mwddns-rule-actions .mwddns-delete-rule')) {
+        focused.blur();
+    }
+});
+</script>
 
 <?php include('foot.inc'); ?>

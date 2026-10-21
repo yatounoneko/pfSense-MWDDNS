@@ -18,6 +18,7 @@ require_once('/usr/local/pkg/mwddns.inc');
 $rules = mwddns_get_rules();
 ?>
 <div id="mwddns-widget-body">
+<?= mwddns_watcher_health_html() ?>
 <table class="table table-striped table-hover table-condensed">
     <thead>
         <tr>

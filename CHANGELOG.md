@@ -3,6 +3,44 @@
 Release notes and maintenance history for pfSense-MWDDNS.
 See [README.md](README.md) for installation, usage and current operational guidance.
 
+## 1.1.7 release
+
+- Hide routine healthy/updating Watcher banners on the rules page and dashboard widget. Keep all attention-state warnings and the full Debug health snapshot.
+- Clear the initial focus that pfSense assigns to the first rule's delete button when opening the rules page. Keep keyboard focus indicators, native button semantics, localized confirmation, POST, CSRF and revision checks.
+- Add local regression coverage for healthy/abnormal banner rendering and one-time focus cleanup, including subsequent keyboard navigation and confirmation cancellation.
+- No changes to DNS synchronization, rule data, service startup/recovery, cron, upgrade preservation or rollback behavior.
+
+## 1.1.6 release
+
+- Fix Watcher health falsely reporting a running supervisor and worker as stopped on FreeBSD. Each headerless `ps` column now has a separate `-o` argument; FreeBSD treats text after `=` within one argument as the column header.
+- Report unparseable process output or an unexpectedly empty successful query as unknown rather than not running. Retain process identity, parent/child, zombie and heartbeat checks.
+- Audit the other `ps` call in the Debug collector: its comma-separated columns have no header overrides and remain valid without changes. Rules page, dashboard and Debug health continue to share the same corrected helper.
+- Add regression fixtures modelling the official FreeBSD `ps` format parser, including the original one-column failure, malformed output and service/heartbeat states. Re-run retained-data/rollback upgrades from 1.1.3, 1.1.4 and 1.1.5. Platform fixtures do not replace native pfSense/FreeBSD acceptance testing.
+- No changes to provider synchronization, rule storage, cron, Watcher startup/recovery, manual-stop protection, installation or rollback behavior.
+
+## 1.1.5 release
+
+- Fix upgrades from 1.1.3 aborting before file installation: the old upgrade worker already stops Watcher, while the legacy service script returns failure if stopped a second time. The installer now checks status and skips only an already-stopped service; unknown status and genuine stop failures still abort before copying files.
+- Retain the 1.1.4 Watcher boot, recovery and health improvements, native control styling, provider behavior, configuration backups and transactional rollback.
+- Add offline regressions using the original 1.1.3 upgrade worker and legacy service script with the installer's actual pre-copy shell logic. Cover initially running/stopped services, retained configuration/runtime/Debug data, reset backups and injected installation/hash failures. The unchanged 1.1.4 ZIP is a negative control for the double-stop regression.
+- Validation uses isolated platform fixtures, not native pfSense/FreeBSD certification. Upgrades initiated by 1.1.3 retain its original start-after-install behavior; 1.1.4+ upgrade workers preserve a previously stopped service.
+
+## 1.1.4 release
+
+- Install a pfSense-compatible `.sh` boot bridge without changing legacy ZIP
+  admission rules. Keep the explicit Python 3.11 interpreter and detached syslog
+  output so starting the watcher does not hold a WebGUI/installer pipe open.
+- Supervise the watcher with FreeBSD `daemon -R 10`. Stop the supervisor before
+  its worker; manual stop, upgrades and uninstall do not trigger a respawn.
+- Stop the old worker before replacing files. Transactional upgrades defer the
+  watcher start until verification/reset completes and preserve a stopped service.
+- Show separate watcher process/heartbeat health on the rules page, dashboard
+  widget and privacy-filtered Debug snapshot. A successful DNS update is not
+  evidence that the watcher is currently running.
+- Restore native pfSense control styling instead of forcing every button, input,
+  badge, alert and code block to have square corners. Keep existing page spacing.
+- Offline regression tests do not substitute for an on-device reboot/failover test.
+
 ## 1.1.3 release
 
 - Require pfSense CE 2.8.0 or later; 2.7.x is no longer supported. 2.9.0

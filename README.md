@@ -8,7 +8,7 @@ same hostname at once. MWDDNS solves that: each rule watches as many WAN
 interfaces as you like and maintains one record per interface address. It runs
 independently of the built-in DDNS service.
 
-Current version: **1.1.3** &nbsp;•&nbsp; License: **Apache-2.0** &nbsp;•&nbsp;
+Current version: **1.1.7** &nbsp;•&nbsp; License: **Apache-2.0** &nbsp;•&nbsp;
 [Changelog](CHANGELOG.md)
 
 **Dashboard widget**
@@ -463,6 +463,37 @@ untouched**. The provider must loop over `$ipsByType` and handle each type
 independently.
 
 ---
+
+## Watcher health and service control
+
+The rules page, dashboard widget and Debug snapshot report watcher health
+separately from the last successful rule update. The watcher polls gateway state;
+the existing five-minute cron job remains the fallback. Viewing status never
+starts a service or changes DNS.
+
+The rules page and dashboard stay quiet while the watcher is healthy or updating
+DNS normally. Attention states still show a banner, including stopped, recovering,
+stale, unavailable heartbeat, missing supervision, maintenance and unknown status.
+Debug snapshots retain the full health state, including healthy operation.
+
+Installation creates `/usr/local/etc/rc.d/mwddns_watcher.sh` for pfSense package
+startup. A volatile once-per-boot latch avoids restarting a manually stopped
+watcher when pfSense reloads packages after interface events. FreeBSD `daemon`
+restarts an unexpectedly exited worker after 10 seconds. It does not restart an
+intentionally stopped supervisor or automatically kill a hung worker.
+
+```sh
+/usr/local/etc/rc.d/mwddns_watcher onestatus
+/usr/local/etc/rc.d/mwddns_watcher onestop
+/usr/local/etc/rc.d/mwddns_watcher onestart
+```
+
+Manual stop lasts until explicit start or the next reboot. To also disable boot
+startup, set `mwddns_watcher_enable=NO` using `sysrc`, then stop the service.
+Uninstall disables boot startup and stops the supervisor before deleting files.
+Upgrades initiated by 1.1.4 or later defer startup until validation finishes and
+preserve a previously stopped service. Upgrading from 1.1.3 retains that older
+upgrader's existing start-after-install behavior.
 
 ## License
 

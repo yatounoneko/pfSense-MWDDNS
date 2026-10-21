@@ -10,6 +10,17 @@
  */
 
 return [
+    'Watcher is healthy' => 'Watcher 运行正常',
+    'Watcher is updating DNS' => 'Watcher 正在更新 DNS',
+    'Watcher heartbeat unavailable' => '尚未收到 Watcher 心跳',
+    'Watcher is recovering' => 'Watcher 正在等待自动恢复',
+    'Watcher heartbeat is stale' => 'Watcher 心跳已过期，请检查服务',
+    'Watcher is running without recovery protection' => 'Watcher 正在运行，但缺少异常退出恢复保护',
+    'Watcher was stopped manually' => 'Watcher 已主动停止',
+    'Watcher is not running' => 'Watcher 未运行',
+    'Watcher maintenance in progress' => 'Watcher 正在安装或卸载维护',
+    'Watcher status is unavailable' => '无法确认 Watcher 状态',
+    'Watcher health is separate from the last rule update. The five-minute cron fallback remains active. Refresh this page for current status.' => 'Watcher 健康状态独立于规则最后更新结果。每五分钟的定时更新仍然保留。刷新页面可查看当前状态。',
     'Encoding report' => '正在编码报告',
     'Checking report storage space' => '正在检查报告存储空间',
     'Flushing report to storage' => '正在刷新报告到存储设备',
