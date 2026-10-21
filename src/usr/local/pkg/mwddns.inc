@@ -28,6 +28,7 @@ define('MWDDNS_DNS_CACHE_DIR', '/var/run/mwddns');
 define('MWDDNS_METADATA_FILE', MWDDNS_DNS_CACHE_DIR . '/metadata.json');
 define('MWDDNS_WATCHER_RC',   '/usr/local/etc/rc.d/mwddns_watcher');
 define('MWDDNS_WATCHER_RCVAR','mwddns_watcher_enable');
+require_once(__DIR__ . '/mwddns/watcher.inc');
 
 /**
  * Write a line to syslog with a consistent prefix.
@@ -121,21 +122,7 @@ function mwddns_gui_styles(): string
 {
     return <<<'CSS'
 <style>
-.mwddns-page .panel,
-.mwddns-page .panel-heading,
-.mwddns-page .panel-body,
-.mwddns-page .panel-footer,
-.mwddns-page .modal-content,
-.mwddns-page .btn,
-.mwddns-page .form-control,
-.mwddns-page .input-group-addon,
-.mwddns-page .alert,
-.mwddns-page .table-responsive,
-.mwddns-page .label,
-.mwddns-page .badge,
-.mwddns-page code,
-.mwddns-page pre,
-.mwddns-page dialog { border-radius: 0 !important; }
+/* Native controls retain the active pfSense theme's geometry. */
 .mwddns-page [hidden] { display: none !important; }
 .mwddns-page .mwddns-rule-actions {
     display: inline-flex;
@@ -1409,6 +1396,11 @@ function mwddns_enable_watcher(): void
     if (!file_exists(MWDDNS_WATCHER_RC)) {
         throw new RuntimeException('Gateway watcher rc script is missing.');
     }
+    mwddns_install_watcher_boot_hook();
+    // A transactional upgrade starts the service only after verification/reset.
+    if (getenv('MWDDNS_DEFER_WATCHER') === '1') {
+        return;
+    }
     // Report service failures instead of claiming successful installation.
     $rcdCmd   = MWDDNS_WATCHER_RC . ' restart';
     mwddns_set_watcher_rcvar('YES');
@@ -1427,10 +1419,10 @@ function mwddns_disable_watcher(): void
     }
     mwddns_set_watcher_rcvar('NO');
     // An already stopped service is not an uninstall failure.
-    if (mwexec(MWDDNS_WATCHER_RC . ' onestatus >/dev/null 2>&1') === 0 &&
-        mwexec(MWDDNS_WATCHER_RC . ' onestop') !== 0) {
+    if (mwexec(MWDDNS_WATCHER_RC . ' onestop') !== 0) {
         throw new RuntimeException('Gateway watcher stop failed; files were not removed.');
     }
+    mwddns_remove_watcher_boot_hook();
 }
 
 /** Called by the pfSense package manager after installation. */

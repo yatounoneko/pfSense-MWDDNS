@@ -27,7 +27,7 @@ import time
 from urllib.parse import quote
 
 # Legacy upgrade validators require one literal collector_version declaration.
-COLLECTOR_METADATA = {"collector_version": "1.1.3"}
+COLLECTOR_METADATA = {"collector_version": "1.1.4"}
 
 BASE = Path("/tmp/mwddns-debug")
 STORAGE_MARGIN = 1024 * 1024
@@ -730,6 +730,14 @@ def runtime_snapshot(context, privacy, enabled):
         result["rules"].append(rule)
     if not enabled:
         return result
+    health = context.get("watcher", {})
+    result["watcher_health"] = {
+        "state": enum(health.get("state"), {"running", "updating", "starting", "recovering",
+            "stale", "unsupervised", "stopped", "not_running", "maintenance", "unknown"}),
+        "supervisor_running": bool(health.get("supervisor_running")),
+        "worker_running": bool(health.get("worker_running")),
+        "heartbeat_age_seconds": number(health.get("heartbeat_age_seconds")),
+    }
     version = small_file(Path("/etc/version"), 256).decode("ascii", "ignore").strip()
     result["pfsense"] = version if re.fullmatch(r"[0-9][0-9A-Za-z.+_-]{0,79}", version) else "unknown"
     result["php"] = context["php_version"] if re.fullmatch(r"\d+\.\d+\.\d+(?:[A-Za-z0-9._-]*)", context["php_version"]) else "unknown"
@@ -754,7 +762,10 @@ def runtime_snapshot(context, privacy, enabled):
                     "pid": int(pid), "ppid": int(parent), "state": state,
                     "elapsed": elapsed, "command": command,
                 })
-        watcher = small_file(Path("/var/run/mwddns_watcher.pid"), 32).decode("ascii").strip()
+        try:
+            watcher = small_file(Path("/var/run/mwddns_watcher.pid"), 32).decode("ascii").strip()
+        except FileNotFoundError:
+            watcher = ""
         result["watcher_pid"] = int(watcher) if watcher.isdigit() else None
         result["watcher_process_present"] = any(
             row["pid"] == result["watcher_pid"] and row["command"] == "python3.11"

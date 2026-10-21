@@ -99,6 +99,7 @@ include('head.inc');
 <?php endif; ?>
 
 <section class="col-xs-12">
+<?= mwddns_watcher_health_html() ?>
 <div class="panel panel-default">
     <div class="panel-heading">
         <h2 class="panel-title"><?= mwddns_t('Multi-WAN DDNS Rules') ?></h2>

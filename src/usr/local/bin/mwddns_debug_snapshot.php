@@ -20,6 +20,7 @@ try {
     mwddns_reload_config();
     $runtime = ($argv[1] ?? '') === 'runtime';
     $context = ['wans' => [], 'rules' => [], 'secrets' => [], 'php_version' => PHP_VERSION];
+    if ($runtime) { $context['watcher'] = mwddns_watcher_health(); }
     $gateways = mwddns_gateway_definitions();
     $thresholds = mwddns_get_gateway_thresholds();
     $statuses = $runtime ? mwddns_get_gateway_statuses($thresholds) : [];

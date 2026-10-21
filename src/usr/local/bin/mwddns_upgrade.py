@@ -452,10 +452,10 @@ def admit_checked_job(job):
         raise UpgradeError("JOB_LIMIT")
 
 
-def run(argv, cwd=None, log=None, timeout=30, required=True):
+def run(argv, cwd=None, log=None, timeout=30, required=True, env=None):
     output = log.open("ab") if log else subprocess.DEVNULL
     try:
-        process = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL,
+        process = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                                    stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
         try:
             result = process.wait(timeout=timeout)
@@ -617,7 +617,8 @@ def perform_install(job, state, checked):
             state["stage"] = "installing"
             atomic(job / "status.json", state)
             changed = True
-            run(["/bin/sh", str(staged / "install.sh")], cwd=staged, log=log, timeout=180)
+            run(["/bin/sh", str(staged / "install.sh")], cwd=staged, log=log, timeout=180,
+                env={**os.environ, "MWDDNS_DEFER_WATCHER": "1"})
             if installed_version() != checked["version"]:
                 raise UpgradeError("INSTALL_CHECK_FAILED")
             for relative, expected in checked["files"].items():
@@ -633,8 +634,11 @@ def perform_install(job, state, checked):
                 run(["/usr/local/bin/php", str(helper), "reset", job.name[4:]], log=log)
                 clear_runtime(RUNTIME)
                 clear_runtime(DEBUG)
+            if was_running:
                 run([RC, "onestart"], log=log, timeout=20)
-            run([RC, "onestatus"], log=log, timeout=15)
+                run([RC, "onestatus"], log=log, timeout=15)
+            else:
+                run([RC, "onestop"], log=log, timeout=20)
             state.update(state="complete", stage="complete", finished=int(time.time()))
             atomic(job / "status.json", state)
         except Exception:

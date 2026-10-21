@@ -44,6 +44,8 @@
 !/src/usr/local/pkg/mwddns/locale/zh_HK.php
 !/src/usr/local/pkg/mwddns/powerdns.php
 !/src/usr/local/pkg/mwddns/upgrade.inc
+!/src/usr/local/pkg/mwddns/watcher.inc
+!/src/usr/local/pkg/mwddns/watcher.inc
 !/src/usr/local/www/mwddns.php
 !/src/usr/local/www/mwddns_debug.php
 !/src/usr/local/www/mwddns_edit.php

@@ -40,11 +40,14 @@ scripts have been removed.
 
 import argparse
 import glob
+import json
 import os
 import math
 import re
+import signal
 import socket
 import subprocess
+import tempfile
 import time
 import xml.etree.ElementTree as ET
 from typing import Dict, Optional
@@ -52,6 +55,31 @@ from typing import Dict, Optional
 MWDDNS_CRON_PATH = "/usr/local/bin/mwddns_cron.php"
 PHP_BIN = "/usr/local/bin/php"
 POLL_INTERVAL_SECONDS = 5
+HEARTBEAT_PATH = "/var/run/mwddns_watcher.health.json"
+
+
+def write_heartbeat(phase="polling"):
+    """Best-effort, atomic, credential-free liveness evidence; no DNS effects."""
+    temporary = None
+    try:
+        descriptor, temporary = tempfile.mkstemp(prefix="mwddns-heartbeat-", dir="/var/run")
+        with os.fdopen(descriptor, "w", encoding="ascii") as stream:
+            json.dump({"pid": os.getpid(), "monotonic": time.monotonic(), "phase": phase}, stream)
+            stream.write("\n")
+        os.replace(temporary, HEARTBEAT_PATH)
+    except OSError:
+        # A full runtime filesystem must not stop gateway monitoring.
+        pass
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+
+def stop_requested(signum, frame):
+    raise SystemExit(0)
 
 
 class BasePlatform:
@@ -154,13 +182,30 @@ class GatewayWatcher:
         if not os.path.exists(self.updater_script):
             print(f"[{time.ctime()}] WATCHER WARNING: updater script {self.updater_script} not found; skipping.")
             return
+        process = None
+        write_heartbeat("updating")
         try:
-            subprocess.run([PHP_BIN, self.updater_script], timeout=120, check=True, stdout=subprocess.DEVNULL)
+            process = subprocess.Popen([PHP_BIN, self.updater_script], stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.DEVNULL)
+            result = process.wait(timeout=120)
+            if result != 0:
+                raise subprocess.CalledProcessError(result, [PHP_BIN, self.updater_script])
             print(f"[{time.ctime()}] Triggered MWDDNS updater (gateway state change).")
         except Exception as e:
             print(f"[{time.ctime()}] WATCHER ERROR: Failed to execute updater: {e}")
+        finally:
+            # Stop/upgrade must not leave an orphaned PHP updater behind.
+            if process is not None and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=3)
+            write_heartbeat()
 
     def start(self) -> None:
+        write_heartbeat()
         thresholds = self.platform.get_gateway_monitoring_thresholds()
         self.previous_statuses = self.platform.get_gateway_statuses(thresholds)
         print(f"[{time.ctime()}] Gateway state watcher started. Polling every {self.poll_interval} seconds.")
@@ -171,6 +216,7 @@ class GatewayWatcher:
             time.sleep(self.poll_interval)
             thresholds = self.platform.get_gateway_monitoring_thresholds()
             current_statuses = self.platform.get_gateway_statuses(thresholds)
+            write_heartbeat()
 
             # Trigger if:
             # 1. We have data and something changed (includes online→down transitions), OR
@@ -201,6 +247,9 @@ def main() -> None:
         help=f"Polling interval in seconds (default: {POLL_INTERVAL_SECONDS})",
     )
     args = parser.parse_args()
+
+    signal.signal(signal.SIGTERM, stop_requested)
+    signal.signal(signal.SIGINT, stop_requested)
 
     platform = PfSensePlatform()
     watcher = GatewayWatcher(platform, args.updater, poll_interval=max(1, args.interval))

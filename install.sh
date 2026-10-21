@@ -34,7 +34,7 @@ WWW_WIDGET="/usr/local/www/widgets/widgets/mwddns.widget.php"
 CRON_SCRIPT="/usr/local/bin/mwddns_cron.php"
 WATCHER_PY="/usr/local/bin/mwddns_gateway_watcher.py"
 WATCHER_RC="/usr/local/etc/rc.d/mwddns_watcher"
-PKG_VERSION="1.1.3"
+PKG_VERSION="1.1.4"
 MWDDNS_METADATA_DIR="/var/run/mwddns"
 
 # ---------------------------------------------------------------------------
@@ -127,6 +127,16 @@ install_files() {
     fi
     require_supported_pfsense
 
+    # Block boot callbacks while files change; never overwrite a running
+    # supervisor script before it has stopped the old worker.
+    mkdir -m 0700 /var/run/mwddns-installing || exit 1
+    trap 'rmdir /var/run/mwddns-installing 2>/dev/null || true' 0
+    if [ -x "${WATCHER_RC}" ]; then
+        "${WATCHER_RC}" onestop
+    fi
+    MWDDNS_INSTALLER_START=YES
+    export MWDDNS_INSTALLER_START
+
     echo "[1/4] Copying plugin files..."
     install -m 0644 "${SRC}/usr/local/pkg/mwddns.inc" "${PKG_INC}"
     install -m 0644 "${SRC}/usr/local/pkg/mwddns.xml" "${PKG_XML}"
@@ -139,6 +149,7 @@ install_files() {
     install -m 0644 "${SRC}/usr/local/pkg/mwddns/powerdns.php"    /usr/local/pkg/mwddns/powerdns.php
     install -m 0644 "${SRC}/usr/local/pkg/mwddns/debug.inc"      /usr/local/pkg/mwddns/debug.inc
     install -m 0644 "${SRC}/usr/local/pkg/mwddns/upgrade.inc"    /usr/local/pkg/mwddns/upgrade.inc
+    install -m 0644 "${SRC}/usr/local/pkg/mwddns/watcher.inc"    /usr/local/pkg/mwddns/watcher.inc
 
     # GUI locale files (Simplified Chinese / Traditional Chinese)
     mkdir -p /usr/local/pkg/mwddns/locale
@@ -375,6 +386,9 @@ uninstall_files() {
     echo "==> Removing Multi-WAN DDNS plugin..."
     require_supported_pfsense uninstall
 
+    mkdir -m 0700 /var/run/mwddns-installing || exit 1
+    trap 'rmdir /var/run/mwddns-installing 2>/dev/null || true' 0
+
     # Step 1 – remove cron job
     /usr/local/bin/php -r "
         require_once('/etc/inc/globals.inc');
@@ -480,7 +494,7 @@ uninstall_files() {
           "${WWW_WIDGET}" "${CRON_SCRIPT}" \
           "${WATCHER_PY}" "${WATCHER_RC}" "${WWW_DEBUG}" \
           "${DEBUG_PY}" "${DEBUG_SNAPSHOT}" "${WWW_UPGRADE}" \
-          "${UPGRADE_PY}" "${UPGRADE_CONFIG}"
+          "${UPGRADE_PY}" "${UPGRADE_CONFIG}" "${WATCHER_RC}.sh"
     rm -rf /usr/local/pkg/mwddns
 
     # Remove runtime metadata state file and clean empty directory

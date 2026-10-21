@@ -3,6 +3,22 @@
 Release notes and maintenance history for pfSense-MWDDNS.
 See [README.md](README.md) for installation, usage and current operational guidance.
 
+## 1.1.4 release
+
+- Install a pfSense-compatible `.sh` boot bridge without changing legacy ZIP
+  admission rules. Keep the explicit Python 3.11 interpreter and detached syslog
+  output so starting the watcher does not hold a WebGUI/installer pipe open.
+- Supervise the watcher with FreeBSD `daemon -R 10`. Stop the supervisor before
+  its worker; manual stop, upgrades and uninstall do not trigger a respawn.
+- Stop the old worker before replacing files. Transactional upgrades defer the
+  watcher start until verification/reset completes and preserve a stopped service.
+- Show separate watcher process/heartbeat health on the rules page, dashboard
+  widget and privacy-filtered Debug snapshot. A successful DNS update is not
+  evidence that the watcher is currently running.
+- Restore native pfSense control styling instead of forcing every button, input,
+  badge, alert and code block to have square corners. Keep existing page spacing.
+- Offline regression tests do not substitute for an on-device reboot/failover test.
+
 ## 1.1.3 release
 
 - Require pfSense CE 2.8.0 or later; 2.7.x is no longer supported. 2.9.0
